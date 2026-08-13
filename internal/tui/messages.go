@@ -32,3 +32,38 @@ type ListUpdatedMsg struct{}
 type SearchModeMsg struct {
 	Active bool
 }
+
+// NewRequestMsg opens the request creation form. It is emitted by the
+// command palette because commands execute as tea.Cmd values, while the form
+// itself is owned by the model and must be created synchronously in Update.
+type NewRequestMsg struct{}
+
+// WorkspaceModalMsg opens a collection/environment CRUD form. Target is
+// optional for rename/delete; when omitted, the form lets the user choose from
+// the full application snapshot.
+type WorkspaceModalMsg struct {
+	Resource string // collection or environment
+	Action   string // new, rename, delete
+	Target   string
+}
+
+// WorkspaceUpdatedMsg tells the TUI to refresh its collection snapshot after a
+// successful workspace operation and to show a concise status message.
+type WorkspaceUpdatedMsg struct {
+	Resource string
+	Action   string
+	Name     string
+}
+
+// CurlImportOpenMsg opens the multiline cURL import flow.
+type CurlImportOpenMsg struct{}
+
+// CurlImportSavedMsg reports a successfully persisted imported request.
+type CurlImportSavedMsg struct {
+	Collection string
+	Name       string
+}
+
+// CurlImportSaveFailedMsg keeps the import target form open after persistence
+// fails (for example, when the chosen request name already exists).
+type CurlImportSaveFailedMsg struct{ Err error }

@@ -69,6 +69,20 @@ type Model struct {
 
 	searching   bool
 	searchInput textinput.Model
+
+	// modal holds transient forms opened from the request/list panels.  Keeping
+	// modal state in the TUI (rather than changing the application API) lets us
+	// validate and cancel edits without touching the persisted request first.
+	modal *modalState
+
+	// workspaceModal is an independent CRUD form for collections/environments.
+	// It owns its complete target list, including empty collections that cannot
+	// appear in the flattened request list.
+	workspaceModal *workspaceModalState
+
+	// curlImport is a fully modal multiline paste/preview/save flow. It is
+	// separate from the request editor because Enter must insert newlines here.
+	curlImport *curlImportModalState
 }
 
 // listItem 适配 list.Item，把 collection/request 平铺进左侧列表。
@@ -116,7 +130,7 @@ func New(a *app.App) Model {
 	p := textinput.New()
 	p.Prompt = ":"
 	p.PromptStyle = promptStyle
-	p.Placeholder = "send | save | env <name> | export curl | history"
+	p.Placeholder = "send | import curl | env <name> | collection new | history"
 
 	envName := "none"
 	if e := a.CurrentEnvironment(); e != nil {

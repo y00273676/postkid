@@ -13,6 +13,7 @@ A terminal-native API client built with Go and Bubble Tea — Postman for your t
 - Manage environments and interpolate `{{variables}}`
 - Inspect status, latency, size, headers, and syntax-highlighted JSON responses
 - Browse request history and reload previous requests
+- Import browser "Copy as cURL" commands into a collection
 - Export requests as cURL commands
 - Navigate entirely from the keyboard
 
@@ -110,7 +111,8 @@ request > collection > environment
 | `d` | Delete a request |
 | `/` | Search requests |
 | `Tab` / `Shift+Tab` | Switch between Params, Headers, Body, and Auth |
-| `e` | Edit the body with `$EDITOR` |
+| `e` | Edit the active tab; Body uses `$EDITOR` |
+| `m` | Edit the request method and URL |
 | `s` / `Ctrl+R` | Send the request |
 | `Ctrl+S` | Save the request to its collection |
 | `:` | Open the command palette |
@@ -125,12 +127,22 @@ Press `:` and enter one of these commands:
 send             Send the current request
 save             Save the current request
 env <name>       Switch environments
+env use <name>   Switch to names reserved by CRUD actions
+env new          Create an environment and edit its variables
+env rename       Rename/edit an environment
+env delete       Delete an environment with confirmation
+collection new   Create a collection
+collection rename Rename a collection
+collection delete Delete a collection with confirmation
+import curl      Paste, preview, and save a cURL command
 export curl      Copy the current request as a cURL command
 history          Browse request history
 new              Create a request
 ```
 
-> cURL import is not implemented yet.
+`import curl` opens a multiline paste form. Press `Ctrl+S` to parse, review the
+request, choose a collection and request name, then press `Ctrl+S` again to
+save. Importing never executes the command or reads `@file` arguments.
 
 ## Development
 

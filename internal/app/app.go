@@ -6,9 +6,12 @@ import (
 	"encoding/base64"
 	"fmt"
 	"net/url"
+	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"go.planetmeican.com/yangguang/postkid/internal/config"
 	"go.planetmeican.com/yangguang/postkid/internal/env"
@@ -16,6 +19,8 @@ import (
 	"go.planetmeican.com/yangguang/postkid/internal/model"
 	"go.planetmeican.com/yangguang/postkid/internal/store"
 )
+
+var requestVariablePattern = regexp.MustCompile(`\{\{\w+\}\}`)
 
 // App 编排配置、存储、变量替换与 HTTP 引擎。
 type App struct {
@@ -29,6 +34,9 @@ type App struct {
 
 // New 加载数据目录并初始化各层。
 func New(cfg *config.Config) (*App, error) {
+	if cfg == nil {
+		return nil, fmt.Errorf("config is required")
+	}
 	a := &App{cfg: cfg, engine: httpengine.New()}
 
 	var err error
@@ -121,6 +129,11 @@ func (a *App) ResolveRequest(req model.Request, coll model.Collection) (model.Re
 		}
 	}
 	authType := strings.ToLower(strings.TrimSpace(req.AuthType))
+	switch authType {
+	case "", model.AuthNone, model.AuthBearer, model.AuthBasic:
+	default:
+		return model.ResolvedRequest{}, fmt.Errorf("unsupported auth type %q", req.AuthType)
+	}
 	if !hasAuthorization && authType != "" && authType != model.AuthNone {
 		switch authType {
 		case model.AuthBearer:
@@ -132,14 +145,15 @@ func (a *App) ResolveRequest(req model.Request, coll model.Collection) (model.Re
 			auth := subUser + ":" + subPass
 			encoded := base64.StdEncoding.EncodeToString([]byte(auth))
 			finalHeaders["Authorization"] = "Basic " + encoded
-		default:
-			return model.ResolvedRequest{}, fmt.Errorf("unsupported auth type %q", req.AuthType)
 		}
 	}
 
 	if len(missing) > 0 {
 		missing = uniqueSorted(missing)
 		return model.ResolvedRequest{}, fmt.Errorf("undefined variables: %s", strings.Join(missing, ", "))
+	}
+	if err := validateHTTPURL(finalURL); err != nil {
+		return model.ResolvedRequest{}, err
 	}
 
 	finalURL = appendParams(finalURL, finalParams)
@@ -150,6 +164,75 @@ func (a *App) ResolveRequest(req model.Request, coll model.Collection) (model.Re
 		Headers: finalHeaders,
 		Body:    finalBody,
 	}, nil
+}
+
+// ValidateRequest verifies a request definition before it is persisted.
+// Template variables are accepted in URLs; their resolved value is validated
+// again by ResolveRequest before any network call.
+func ValidateRequest(req model.Request) error {
+	_, err := normalizeRequest(req)
+	return err
+}
+
+func normalizeRequest(req model.Request) (model.Request, error) {
+	req.Name = strings.TrimSpace(req.Name)
+	if req.Name == "" {
+		return model.Request{}, fmt.Errorf("request name cannot be empty")
+	}
+	if strings.ContainsAny(req.Name, "/\\") {
+		return model.Request{}, fmt.Errorf("request name %q cannot contain path separators", req.Name)
+	}
+	for _, r := range req.Name {
+		if unicode.IsControl(r) {
+			return model.Request{}, fmt.Errorf("request name %q cannot contain control characters", req.Name)
+		}
+	}
+
+	req.Method = strings.ToUpper(strings.TrimSpace(req.Method))
+	if !model.IsValidMethod(req.Method) {
+		return model.Request{}, fmt.Errorf("unsupported HTTP method %q", req.Method)
+	}
+	req.URL = strings.TrimSpace(req.URL)
+	if req.URL == "" {
+		return model.Request{}, fmt.Errorf("URL cannot be empty")
+	}
+	validationURL := req.URL
+	if strings.HasPrefix(req.URL, "{{") {
+		end := strings.Index(validationURL, "}}")
+		if end < 0 {
+			return model.Request{}, fmt.Errorf("invalid request URL %q: unterminated variable", req.URL)
+		}
+		validationURL = "https://example.invalid" + validationURL[end+2:]
+	}
+	validationURL = requestVariablePattern.ReplaceAllString(validationURL, "placeholder")
+	if err := validateHTTPURL(validationURL); err != nil {
+		return model.Request{}, err
+	}
+
+	authType := strings.ToLower(strings.TrimSpace(req.AuthType))
+	if authType == "" {
+		authType = model.AuthNone
+	}
+	switch authType {
+	case model.AuthNone, model.AuthBasic, model.AuthBearer:
+	default:
+		return model.Request{}, fmt.Errorf("unsupported auth type %q", req.AuthType)
+	}
+	if req.AuthType != "" {
+		req.AuthType = authType
+	}
+	return req, nil
+}
+
+func validateHTTPURL(rawURL string) error {
+	u, err := url.ParseRequestURI(rawURL)
+	if err != nil {
+		return fmt.Errorf("invalid request URL %q: %w", rawURL, err)
+	}
+	if (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return fmt.Errorf("invalid request URL %q: expected an absolute http or https URL", rawURL)
+	}
+	return nil
 }
 
 func uniqueSorted(values []string) []string {
@@ -201,6 +284,153 @@ func (a *App) LoadHistory() ([]model.HistoryEntry, error) {
 	return store.LoadHistory(a.cfg.HistoryDir())
 }
 
+// RefreshCollections reloads all collection files from disk and replaces the
+// application cache only after the complete load succeeds. Callers such as a
+// TUI can rebuild their detached view from Collections after this operation.
+func (a *App) RefreshCollections() error {
+	if a == nil || a.cfg == nil {
+		return fmt.Errorf("app and config are required")
+	}
+	collections, err := store.LoadCollections(a.cfg.CollectionsDir())
+	if err != nil {
+		return fmt.Errorf("load collections: %w", err)
+	}
+	a.collections = collections
+	return nil
+}
+
+// ReloadCollections is an alias retained for callers that describe the same
+// operation as a reload rather than a refresh.
+func (a *App) ReloadCollections() error { return a.RefreshCollections() }
+
+// CreateCollection creates an empty collection in the configured collections
+// directory and adds it to the application cache after persistence succeeds.
+// The returned pointer is detached from the cache, matching Collections'
+// value-slice API and allowing a caller to prepare its first request safely.
+func (a *App) CreateCollection(name string) (*model.Collection, error) {
+	if a == nil || a.cfg == nil {
+		return nil, fmt.Errorf("app and config are required")
+	}
+	normalized, err := store.NormalizeCollectionName(name)
+	if err != nil {
+		return nil, err
+	}
+	for _, existing := range a.collections {
+		existingName, normalizeErr := store.NormalizeCollectionName(existing.Name)
+		if normalizeErr == nil && existingName == normalized {
+			return nil, fmt.Errorf("collection %q already exists: %w", normalized, store.ErrCollectionExists)
+		}
+	}
+	collection, err := store.CreateCollection(a.cfg.CollectionsDir(), normalized)
+	if err != nil {
+		return nil, err
+	}
+	a.collections = append(a.collections, collection)
+	result := collection
+	return &result, nil
+}
+
+// AddCollection is the error-only form useful to command handlers that do not
+// need the newly-created model. CreateCollection remains available when the
+// caller needs the canonical FilePath immediately.
+func (a *App) AddCollection(name string) error {
+	_, err := a.CreateCollection(name)
+	return err
+}
+
+// RenameCollection changes both a collection's YAML Name and its filename.
+// The store performs the filesystem transaction; the app cache is changed
+// only after it reports success. Detached collections are supported as long as
+// their path belongs to this app's collections directory.
+func (a *App) RenameCollection(collection *model.Collection, newName string) error {
+	if a == nil || a.cfg == nil {
+		return fmt.Errorf("app and config are required")
+	}
+	if collection == nil {
+		return fmt.Errorf("collection is required")
+	}
+	if err := a.validateCollectionPath(collection.FilePath); err != nil {
+		return err
+	}
+	normalized, err := store.NormalizeCollectionName(newName)
+	if err != nil {
+		return err
+	}
+	for _, existing := range a.collections {
+		if existing.FilePath == collection.FilePath {
+			continue
+		}
+		existingName, normalizeErr := store.NormalizeCollectionName(existing.Name)
+		if normalizeErr == nil && existingName == normalized {
+			return fmt.Errorf("collection %q already exists: %w", normalized, store.ErrCollectionExists)
+		}
+	}
+	oldPath, oldName := collection.FilePath, collection.Name
+	if err := store.RenameCollection(collection, normalized); err != nil {
+		return err
+	}
+	a.replaceCachedCollection(collection, oldPath, oldName)
+	return nil
+}
+
+// RenameCollectionByName is a name-oriented convenience wrapper for CLI and
+// command-palette callers. The pointer-oriented method above is useful to a
+// TUI that already has the selected collection model.
+func (a *App) RenameCollectionByName(name, newName string) error {
+	if a == nil {
+		return fmt.Errorf("app is required")
+	}
+	for i := range a.collections {
+		if a.collections[i].Name == strings.TrimSpace(name) {
+			return a.RenameCollection(&a.collections[i], newName)
+		}
+	}
+	return fmt.Errorf("collection %q not found", name)
+}
+
+// DeleteCollection removes a collection YAML file and removes the successful
+// target from the application cache. Deletion is intentionally explicit: the
+// caller has already obtained user confirmation at the UI layer.
+func (a *App) DeleteCollection(collection *model.Collection) error {
+	if a == nil || a.cfg == nil {
+		return fmt.Errorf("app and config are required")
+	}
+	if collection == nil {
+		return fmt.Errorf("collection is required")
+	}
+	if err := a.validateCollectionPath(collection.FilePath); err != nil {
+		return err
+	}
+	oldPath, oldName := collection.FilePath, collection.Name
+	if err := store.DeleteCollection(collection); err != nil {
+		return err
+	}
+	for i := range a.collections {
+		if a.collections[i].FilePath == oldPath ||
+			(a.collections[i].FilePath == "" && a.collections[i].Name == oldName) {
+			a.collections = append(a.collections[:i], a.collections[i+1:]...)
+			break
+		}
+	}
+	return nil
+}
+
+// DeleteCollectionByName is the name-oriented counterpart to
+// DeleteCollection. It performs no filesystem operation when the name is not
+// present in the application cache.
+func (a *App) DeleteCollectionByName(name string) error {
+	if a == nil {
+		return fmt.Errorf("app is required")
+	}
+	name = strings.TrimSpace(name)
+	for i := range a.collections {
+		if a.collections[i].Name == name {
+			return a.DeleteCollection(&a.collections[i])
+		}
+	}
+	return fmt.Errorf("collection %q not found", name)
+}
+
 // flattenHeaders 把 map[string][]string 转成 map[string]string（取第一个值）。
 func flattenHeaders(h map[string][]string) map[string]string {
 	out := make(map[string]string, len(h))
@@ -214,14 +444,22 @@ func flattenHeaders(h map[string][]string) map[string]string {
 
 // SaveRequest 把单个请求回写到其所属 collection 文件。
 func (a *App) SaveRequest(coll *model.Collection, req *model.Request) error {
+	if coll == nil || req == nil {
+		return fmt.Errorf("collection and request are required")
+	}
+	normalized, err := normalizeRequest(*req)
+	if err != nil {
+		return err
+	}
 	for i := range coll.Requests {
-		if coll.Requests[i].Name == req.Name {
+		if coll.Requests[i].Name == normalized.Name {
 			previous := coll.Requests[i]
-			coll.Requests[i] = *req
+			coll.Requests[i] = normalized
 			if err := store.SaveCollection(coll); err != nil {
 				coll.Requests[i] = previous
 				return err
 			}
+			*req = normalized
 			a.updateCachedCollection(coll)
 			return nil
 		}
@@ -231,22 +469,33 @@ func (a *App) SaveRequest(coll *model.Collection, req *model.Request) error {
 
 // AddRequest 把一个新请求追加到 collection 末尾并保存。
 func (a *App) AddRequest(coll *model.Collection, req *model.Request) error {
+	if coll == nil || req == nil {
+		return fmt.Errorf("collection and request are required")
+	}
+	normalized, err := normalizeRequest(*req)
+	if err != nil {
+		return err
+	}
 	for i := range coll.Requests {
-		if coll.Requests[i].Name == req.Name {
-			return fmt.Errorf("request %q already exists in collection %q", req.Name, coll.Name)
+		if coll.Requests[i].Name == normalized.Name {
+			return fmt.Errorf("request %q already exists in collection %q", normalized.Name, coll.Name)
 		}
 	}
-	coll.Requests = append(coll.Requests, *req)
+	coll.Requests = append(coll.Requests, normalized)
 	if err := store.SaveCollection(coll); err != nil {
 		coll.Requests = coll.Requests[:len(coll.Requests)-1]
 		return err
 	}
+	*req = normalized
 	a.updateCachedCollection(coll)
 	return nil
 }
 
 // DeleteRequest 从 collection 中删除指定名称的请求并保存。
 func (a *App) DeleteRequest(coll *model.Collection, name string) error {
+	if coll == nil {
+		return fmt.Errorf("collection is required")
+	}
 	for i := range coll.Requests {
 		if coll.Requests[i].Name == name {
 			previous := append([]model.Request(nil), coll.Requests...)
@@ -272,6 +521,43 @@ func (a *App) updateCachedCollection(coll *model.Collection) {
 			return
 		}
 	}
+}
+
+// replaceCachedCollection handles a path-changing mutation. Looking up the
+// collection only after RenameCollection has changed FilePath would otherwise
+// leave the old cache entry in place.
+func (a *App) replaceCachedCollection(coll *model.Collection, oldPath, oldName string) {
+	for i := range a.collections {
+		if a.collections[i].FilePath == oldPath ||
+			(a.collections[i].FilePath == "" && a.collections[i].Name == oldName) {
+			a.collections[i] = *coll
+			return
+		}
+	}
+}
+
+// validateCollectionPath prevents the App facade from operating on an
+// arbitrary YAML file supplied through a detached model. Store-level APIs are
+// useful for low-level tests and migration tools, while app-level CRUD is
+// confined to the configured collections directory.
+func (a *App) validateCollectionPath(path string) error {
+	if path == "" {
+		return fmt.Errorf("collection file path is required")
+	}
+	dir, err := filepath.Abs(filepath.Clean(a.cfg.CollectionsDir()))
+	if err != nil {
+		return fmt.Errorf("resolve collections directory: %w", err)
+	}
+	file, err := filepath.Abs(filepath.Clean(path))
+	if err != nil {
+		return fmt.Errorf("resolve collection path: %w", err)
+	}
+	rel, err := filepath.Rel(dir, file)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) ||
+		filepath.Dir(file) != dir || filepath.Ext(file) != ".yaml" {
+		return fmt.Errorf("collection path %q is outside the configured collections directory", path)
+	}
+	return nil
 }
 
 // appendParams 把 query params 拼到 URL，已存在的 query 保留。

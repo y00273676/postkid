@@ -2,6 +2,9 @@
 package config
 
 import (
+	"bytes"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 
@@ -50,7 +53,48 @@ func (c *Config) Save() error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(c.configPath, data, 0o644)
+	return atomicWrite(c.configPath, data, 0o644)
+}
+
+// atomicWrite keeps the previous config intact if serialization, writing, or
+// rename fails. Environment mutations rely on this property when they update
+// current_env as part of a file transaction.
+func atomicWrite(path string, data []byte, newMode os.FileMode) error {
+	dir := filepath.Dir(path)
+	mode := newMode
+	if info, err := os.Lstat(path); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+			return fmt.Errorf("config path is not a regular file: %s", path)
+		}
+		mode = info.Mode().Perm()
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("inspect config path: %w", err)
+	}
+	tmp, err := os.CreateTemp(dir, ".postkid-config-*.tmp")
+	if err != nil {
+		return fmt.Errorf("create temporary config: %w", err)
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if err := tmp.Chmod(mode); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("set temporary config permissions: %w", err)
+	}
+	if _, err := io.Copy(tmp, bytes.NewReader(data)); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("write temporary config: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("sync temporary config: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close temporary config: %w", err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		return fmt.Errorf("replace config: %w", err)
+	}
+	return nil
 }
 
 func (c *Config) ensureDirs() error {

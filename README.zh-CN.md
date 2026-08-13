@@ -13,6 +13,7 @@
 - 管理环境并插值替换 `{{变量}}`
 - 查看状态码、耗时、响应大小、响应头和带语法高亮的 JSON 响应
 - 浏览请求历史并重新载入历史请求
+- 将浏览器“复制为 cURL”的命令导入 Collection
 - 将请求导出为 cURL 命令
 - 全键盘操作
 
@@ -109,7 +110,8 @@ request > collection > environment
 | `d` | 删除请求 |
 | `/` | 搜索请求 |
 | `Tab` / `Shift+Tab` | 切换 Params、Headers、Body 和 Auth |
-| `e` | 使用 `$EDITOR` 编辑请求体 |
+| `e` | 编辑当前 Tab；Body 使用 `$EDITOR` |
+| `m` | 编辑请求 Method 和 URL |
 | `s` / `Ctrl+R` | 发送请求 |
 | `Ctrl+S` | 将请求保存到 Collection |
 | `:` | 打开命令面板 |
@@ -124,12 +126,22 @@ request > collection > environment
 send             发送当前请求
 save             保存当前请求
 env <name>       切换环境
+env use <name>   切换到与 CRUD 动作同名的环境
+env new          创建 Environment 并编辑变量
+env rename       重命名或编辑 Environment
+env delete       确认后删除 Environment
+collection new   创建 Collection
+collection rename 重命名 Collection
+collection delete 确认后删除 Collection
+import curl      粘贴、预览并保存 cURL 命令
 export curl      将当前请求复制为 cURL 命令
 history          浏览请求历史
 new              新建请求
 ```
 
-> cURL 导入功能尚未实现。
+`import curl` 会打开多行粘贴表单。按 `Ctrl+S` 解析并预览请求，选择
+Collection、填写请求名称后再次按 `Ctrl+S` 保存。导入过程不会执行命令，
+也不会读取 `@file` 参数。
 
 ## 开发
 

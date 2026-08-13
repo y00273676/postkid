@@ -44,9 +44,10 @@ func (m Model) executeCommand(input string) tea.Cmd {
 		return nil
 	}
 	cmd := parts[0]
+	args := parts[1:]
 	arg := ""
-	if len(parts) > 1 {
-		arg = parts[1]
+	if len(args) > 0 {
+		arg = args[0]
 	}
 	switch cmd {
 	case "send":
@@ -54,6 +55,20 @@ func (m Model) executeCommand(input string) tea.Cmd {
 	case "save":
 		return m.saveCurrent()
 	case "env":
+		if arg == "use" {
+			if len(args) < 2 {
+				return m.info("usage: env use <name>")
+			}
+			name := strings.Join(args[1:], " ")
+			if err := m.app.SetEnvironment(name); err != nil {
+				return m.errorCmd(err)
+			}
+			return m.info("env switched to " + name)
+		}
+		if isWorkspaceAction(arg) {
+			target := strings.Join(args[1:], " ")
+			return m.openWorkspaceCommand("environment", arg, target)
+		}
 		if arg == "" {
 			return m.info("usage: env <name>")
 		}
@@ -70,10 +85,48 @@ func (m Model) executeCommand(input string) tea.Cmd {
 		return m.showHistoryCmd()
 	case "new":
 		return m.newRequestCmd()
+	case "collection", "collections":
+		if arg == "" {
+			return m.info("usage: collection new|rename|delete [name]")
+		}
+		if !isWorkspaceAction(arg) {
+			return m.info("usage: collection new|rename|delete [name]")
+		}
+		return m.openWorkspaceCommand("collection", arg, strings.Join(args[1:], " "))
+	case "environment", "environments":
+		if arg == "" || !isWorkspaceAction(arg) {
+			return m.info("usage: env new|rename|delete [name]")
+		}
+		return m.openWorkspaceCommand("environment", arg, strings.Join(args[1:], " "))
 	case "import":
-		return m.info(cmd + ": not implemented")
+		if strings.ToLower(arg) != "curl" || len(args) != 1 {
+			return m.info("usage: import curl")
+		}
+		return m.openCurlImportCommand()
 	}
 	return m.info("unknown command: " + cmd)
+}
+
+func (m Model) openCurlImportCommand() tea.Cmd {
+	return func() tea.Msg { return CurlImportOpenMsg{} }
+}
+
+func isWorkspaceAction(action string) bool {
+	switch strings.ToLower(strings.TrimSpace(action)) {
+	case "new", "rename", "delete":
+		return true
+	default:
+		return false
+	}
+}
+
+// openWorkspaceCommand returns a message instead of mutating the model in a
+// command closure. The next Update call creates the modal synchronously, so
+// text inputs are ready before the next key event arrives.
+func (m Model) openWorkspaceCommand(resource, action, target string) tea.Cmd {
+	return func() tea.Msg {
+		return WorkspaceModalMsg{Resource: resource, Action: action, Target: target}
+	}
 }
 
 // exportCurl 把当前请求转为 curl 命令并复制到剪贴板。
@@ -174,38 +227,11 @@ func (m Model) showHistoryCmd() tea.Cmd {
 	}
 }
 
-// newRequestCmd 在当前 collection 中创建一个新请求并保存。
+// newRequestCmd asks Update to open the modal form.  The form must be opened
+// by Update (rather than from inside a command closure) so its text inputs are
+// part of the model before the next key event arrives.
 func (m Model) newRequestCmd() tea.Cmd {
-	if m.curColl == nil {
-		return m.errorCmd(fmt.Errorf("no collection selected"))
-	}
-	coll := m.curColl
-	req := model.Request{
-		Name:   "new-request",
-		Method: "GET",
-		URL:    "https://",
-	}
-	app := m.app
 	return func() tea.Msg {
-		if err := app.AddRequest(coll, &req); err != nil {
-			return ErrorMsg{Err: err}
-		}
-		return ListUpdatedMsg{}
-	}
-}
-
-// deleteCurrentCmd 删除当前选中的请求。
-func (m Model) deleteCurrentCmd() tea.Cmd {
-	if m.curReq == nil || m.curColl == nil {
-		return m.errorCmd(fmt.Errorf("no request selected"))
-	}
-	name := m.curReq.Name
-	coll := m.curColl
-	app := m.app
-	return func() tea.Msg {
-		if err := app.DeleteRequest(coll, name); err != nil {
-			return ErrorMsg{Err: err}
-		}
-		return ListUpdatedMsg{}
+		return NewRequestMsg{}
 	}
 }

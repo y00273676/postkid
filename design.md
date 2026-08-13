@@ -86,7 +86,7 @@
 | History | ✅ |
 | curl 导出 | ✅ |
 | Postman Collection 导入 | 第二阶段 |
-| curl 导入 | V1.5 |
+| curl 导入 | ✅ V1.5 |
 | gRPC | 第二阶段 |
 | WebSocket | 后面 |
 | Pre / Post Script | 后面 |
@@ -105,7 +105,7 @@ TUI Postman
 Send
 ```
 
-这会比手工创建请求舒服很多。但 curl 不是结构化的，要写 parser 处理 shell 引号转义、`\` 续行、`-H` / `-d` / `--data-raw` / `@file` 等各种 flag，容易做但不 trivial，会拖慢 MVP。因此 **V1 只做 curl 导出**（`http.Request` → curl 字符串，简单），**导入移到 V1.5**。
+这会比手工创建请求舒服很多。V1.5 已加入非执行式 parser，处理 shell 引号转义、`\` 续行、`-H` / `-d` / `--data-raw` 等常见 flag；为保证导入安全，会拒绝 shell 操作符、命令替换、变量展开、`@file` 和其他不受支持的参数。
 
 ---
 
@@ -205,6 +205,12 @@ API 请求以 YAML 文件存储，**可以直接用 Git 管理**。这甚至可�
 :new
 :save
 :env sandbox
+:env new
+:env rename
+:env delete
+:collection new
+:collection rename
+:collection delete
 :import curl
 :export curl
 :history

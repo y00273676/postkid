@@ -2,6 +2,7 @@ package app
 
 import (
 	"encoding/base64"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -11,6 +12,7 @@ import (
 
 	"go.planetmeican.com/yangguang/postkid/internal/config"
 	"go.planetmeican.com/yangguang/postkid/internal/model"
+	"go.planetmeican.com/yangguang/postkid/internal/store"
 )
 
 // setupDataDir 用 testdata 内容填充一个临时数据目录，返回 Config。
@@ -311,6 +313,10 @@ func TestResolveRequest_RejectsUnknownAuthAndDeduplicatesMissingVariables(t *tes
 	if _, err := a.ResolveRequest(req, coll); err == nil || !strings.Contains(err.Error(), "unsupported auth type") {
 		t.Fatalf("unknown auth error = %v", err)
 	}
+	req.Headers = map[string]string{"Authorization": "Digest explicit"}
+	if _, err := a.ResolveRequest(req, coll); err == nil || !strings.Contains(err.Error(), "unsupported auth type") {
+		t.Fatalf("explicit header should not hide unknown auth type: %v", err)
+	}
 
 	req = model.Request{
 		Name: "missing", Method: "GET", URL: "{{same}}/{{same}}",
@@ -418,5 +424,170 @@ func TestRequestMutationsSynchronizeDetachedCollection(t *testing.T) {
 	}
 	if got := len(a.Collections()[0].Requests); got != originalLen {
 		t.Fatalf("cached request count after delete = %d, want %d", got, originalLen)
+	}
+}
+
+func TestValidateRequest(t *testing.T) {
+	valid := []model.Request{
+		{Name: "health", Method: "GET", URL: "https://example.com/health"},
+		{Name: "templated", Method: "post", URL: "{{base_url}}/orders/{{order_id}}", AuthType: "BEARER"},
+		{Name: "host-template", Method: "PATCH", URL: "https://{{host}}/resource"},
+	}
+	for _, req := range valid {
+		if err := ValidateRequest(req); err != nil {
+			t.Errorf("ValidateRequest(%+v): %v", req, err)
+		}
+	}
+
+	invalid := []model.Request{
+		{Name: "", Method: "GET", URL: "https://example.com"},
+		{Name: "folder/request", Method: "GET", URL: "https://example.com"},
+		{Name: "bad\nname", Method: "GET", URL: "https://example.com"},
+		{Name: "method", Method: "OPTIONS", URL: "https://example.com"},
+		{Name: "relative", Method: "GET", URL: "/relative"},
+		{Name: "scheme", Method: "GET", URL: "ftp://example.com"},
+		{Name: "template", Method: "GET", URL: "{{base_url"},
+		{Name: "auth", Method: "GET", URL: "https://example.com", AuthType: "digest"},
+	}
+	for _, req := range invalid {
+		if err := ValidateRequest(req); err == nil {
+			t.Errorf("ValidateRequest(%+v) unexpectedly succeeded", req)
+		}
+	}
+}
+
+func TestRequestMutationsValidateAndNormalizeBeforeWriting(t *testing.T) {
+	cfg := setupDataDir(t)
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	detached := a.Collections()[0]
+	originalLen := len(detached.Requests)
+	invalid := model.Request{Name: "invalid", Method: "GET", URL: "/relative"}
+	if err := a.AddRequest(&detached, &invalid); err == nil {
+		t.Fatal("AddRequest accepted an invalid URL")
+	}
+	if len(detached.Requests) != originalLen {
+		t.Fatal("invalid AddRequest mutated the collection")
+	}
+
+	valid := model.Request{Name: " normalized ", Method: " post ", URL: " https://example.com/path ", AuthType: "BASIC"}
+	if err := a.AddRequest(&detached, &valid); err != nil {
+		t.Fatal(err)
+	}
+	if valid.Name != "normalized" || valid.Method != "POST" || valid.URL != "https://example.com/path" || valid.AuthType != model.AuthBasic {
+		t.Fatalf("normalized request = %+v", valid)
+	}
+}
+
+func TestResolveRequestRejectsResolvedRelativeURL(t *testing.T) {
+	cfg := setupDataDir(t)
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := model.Request{Name: "relative", Method: "GET", URL: "/relative"}
+	if _, err := a.ResolveRequest(req, model.Collection{}); err == nil || !strings.Contains(err.Error(), "invalid request URL") {
+		t.Fatalf("ResolveRequest error = %v", err)
+	}
+}
+
+func TestCollectionCRUDUpdatesCacheAndPersists(t *testing.T) {
+	cfg := setupDataDir(t)
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial := len(a.Collections())
+	created, err := a.CreateCollection("local.yaml")
+	if err != nil {
+		t.Fatalf("CreateCollection: %v", err)
+	}
+	if created.Name != "local" || len(a.Collections()) != initial+1 {
+		t.Fatalf("created/cache = %#v/%d", created, len(a.Collections()))
+	}
+	if _, err := a.CreateCollection("local"); !errors.Is(err, store.ErrCollectionExists) {
+		t.Fatalf("duplicate error = %v, want ErrCollectionExists", err)
+	}
+
+	created.Requests = []model.Request{{Name: "health", Method: "GET", URL: "https://example.test/health"}}
+	if err := store.SaveCollection(created); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.RefreshCollections(); err != nil {
+		t.Fatalf("RefreshCollections: %v", err)
+	}
+	var cached *model.Collection
+	for i := range a.collections {
+		if a.collections[i].Name == "local" {
+			cached = &a.collections[i]
+			break
+		}
+	}
+	if cached == nil || len(cached.Requests) != 1 {
+		t.Fatalf("refreshed cache = %#v", cached)
+	}
+
+	if err := a.RenameCollection(cached, "renamed.yaml"); err != nil {
+		t.Fatalf("RenameCollection: %v", err)
+	}
+	if cached.Name != "renamed" || cached.FilePath != filepath.Join(cfg.CollectionsDir(), "renamed.yaml") {
+		t.Fatalf("renamed model = %#v", cached)
+	}
+	var renamed model.Collection
+	for _, got := range a.Collections() {
+		if got.Name == "renamed" {
+			renamed = got
+			break
+		}
+	}
+	if renamed.Name != "renamed" || len(renamed.Requests) != 1 {
+		t.Fatalf("renamed cache = %#v", renamed)
+	}
+	if err := a.DeleteCollectionByName("renamed"); err != nil {
+		t.Fatalf("DeleteCollectionByName: %v", err)
+	}
+	if len(a.Collections()) != initial {
+		t.Fatalf("cache length after delete = %d, want %d", len(a.Collections()), initial)
+	}
+	if _, err := os.Stat(filepath.Join(cfg.CollectionsDir(), "renamed.yaml")); !os.IsNotExist(err) {
+		t.Fatalf("deleted collection exists: %v", err)
+	}
+}
+
+func TestCollectionCRUDRejectsInvalidAndExternalModels(t *testing.T) {
+	cfg := setupDataDir(t)
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"", "../escape", "nested/name"} {
+		if _, err := a.CreateCollection(name); !errors.Is(err, store.ErrInvalidName) {
+			t.Errorf("CreateCollection(%q) error = %v, want ErrInvalidName", name, err)
+		}
+	}
+	external := &model.Collection{Name: "external", FilePath: filepath.Join(t.TempDir(), "external.yaml")}
+	if err := a.DeleteCollection(external); err == nil {
+		t.Fatal("DeleteCollection accepted a path outside configured directory")
+	}
+}
+
+func TestCollectionRefreshIsTransactionalOnLoadFailure(t *testing.T) {
+	cfg := setupDataDir(t)
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := append([]model.Collection(nil), a.Collections()...)
+	badPath := filepath.Join(cfg.CollectionsDir(), "bad.yaml")
+	if err := os.WriteFile(badPath, []byte("name: [invalid"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.RefreshCollections(); err == nil {
+		t.Fatal("RefreshCollections unexpectedly succeeded for invalid YAML")
+	}
+	if len(a.Collections()) != len(before) || a.Collections()[0].FilePath != before[0].FilePath {
+		t.Fatalf("cache changed after failed refresh: %#v", a.Collections())
 	}
 }

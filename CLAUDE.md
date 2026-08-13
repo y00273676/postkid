@@ -68,21 +68,21 @@ App (application 层门面，不 import bubbletea，可被 CLI/CI 复用)
 | 功能 | 状态 |
 |---|---|
 | GET/POST/PUT/PATCH/DELETE | ✅ model 支持，测试覆盖 GET/POST |
-| URL 编辑 | ✅ 请求面板展示 resolved URL |
-| Query Params | ✅ Params tab 展示 |
-| Headers | ✅ Headers tab 展示 |
+| URL 编辑 | ✅ `m` 打开 Method / URL 表单 |
+| Query Params | ✅ Params tab 展示和 key-value 编辑 |
+| Headers | ✅ Headers tab 展示和 key-value 编辑 |
 | JSON/Text Body | ✅ Body tab 展示 + $EDITOR 编辑 |
-| Auth (Basic/Bearer) | ✅ Auth tab，发送时自动生成 Authorization header |
+| Auth (Basic/Bearer) | ✅ Auth tab 表单，发送时自动生成 Authorization header |
 | Response Body | ✅ JSON pretty-print |
 | Status/Latency/Size | ✅ 状态栏展示 |
-| Collections | ✅ 加载、选择、保存回写 |
-| Environment | ✅ 切换（`:env`）、持久化 current_env |
+| Collections | ✅ 加载、选择、保存及 `:collection` CRUD |
+| Environment | ✅ 切换、变量编辑、`:env` CRUD、持久化 current_env |
 | `{{variable}}` 变量 | ✅ 三层优先级合并 |
 | History | ✅ `:history` 浏览，发送后自动记录到 jsonl |
 | curl 导出 | ✅ `:export curl` 复制到剪贴板 |
-| curl 导入 | ❌ (V1.5) |
-| New Request | ✅ `:new` / `n` 键 |
-| Delete Request | ✅ `d` 键 |
+| curl 导入 | ✅ `:import curl` 安全解析、预览并保存 |
+| New Request | ✅ `:new` / `n` 表单选择 Collection 并填写请求信息 |
+| Delete Request | ✅ `d` 键并确认 |
 | Search | ✅ `/` 键实时过滤列表 |
 
 ## 关键设计决策
@@ -91,6 +91,6 @@ App (application 层门面，不 import bubbletea，可被 CLI/CI 复用)
 - 存储用本地 YAML 文件（Git 友好），不用数据库
 - App 层不 import bubbletea，未来可被 CLI/CI 复用
 - 原子写用临时文件 + rename 防止崩溃损坏
-- 请求发送是同步的，TUI 中用 `tea.Batch` 异步执行
+- 请求发送是同步的，TUI 中用 `tea.Sequence` 保证 sending 状态先于异步响应
 - Auth 字段 → Authorization header 在 ResolveRequest 中处理，不覆盖显式 Header
 - History 用 JSONL 追加写，最多保留 500 条

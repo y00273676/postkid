@@ -1,8 +1,10 @@
 package store
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"go.planetmeican.com/yangguang/postkid/internal/model"
@@ -84,7 +86,7 @@ func TestCollectionRoundTrip(t *testing.T) {
 func TestSaveAtomic(t *testing.T) {
 	dir := t.TempDir()
 	c := &model.Collection{
-		Name: "demo",
+		Name:     "demo",
 		FilePath: filepath.Join(dir, "demo.yaml"),
 		Requests: []model.Request{{Name: "r1", Method: "GET", URL: "https://x"}},
 	}
@@ -93,5 +95,103 @@ func TestSaveAtomic(t *testing.T) {
 	}
 	if _, err := os.Stat(c.FilePath); err != nil {
 		t.Fatalf("file not written: %v", err)
+	}
+}
+
+func TestCollectionCRUDStore(t *testing.T) {
+	dir := t.TempDir()
+	created, err := CreateCollection(dir, "orders")
+	if err != nil {
+		t.Fatalf("CreateCollection: %v", err)
+	}
+	if created.Name != "orders" || created.FilePath != filepath.Join(dir, "orders.yaml") {
+		t.Fatalf("created collection = %#v", created)
+	}
+	if len(created.Requests) != 0 {
+		t.Fatalf("new collection requests = %#v, want empty", created.Requests)
+	}
+	if _, err := os.Stat(created.FilePath); err != nil {
+		t.Fatalf("created file missing: %v", err)
+	}
+	if _, err := CreateCollection(dir, "orders.yaml"); !errors.Is(err, ErrCollectionExists) {
+		t.Fatalf("duplicate error = %v, want ErrCollectionExists", err)
+	}
+
+	created.Requests = []model.Request{{Name: "keep", Method: "POST", URL: "https://example.test", Body: `{"ok":true}`}}
+	created.Variables = map[string]string{"token": "secret"}
+	if err := SaveCollection(&created); err != nil {
+		t.Fatalf("SaveCollection: %v", err)
+	}
+	if err := RenameCollection(&created, "renamed.yaml"); err != nil {
+		t.Fatalf("RenameCollection: %v", err)
+	}
+	if created.Name != "renamed" || created.FilePath != filepath.Join(dir, "renamed.yaml") {
+		t.Fatalf("renamed collection = %#v", created)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "orders.yaml")); !os.IsNotExist(err) {
+		t.Fatalf("old collection path still exists: %v", err)
+	}
+	data, err := os.ReadFile(created.FilePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "keep") || !strings.Contains(string(data), "secret") || !strings.Contains(string(data), "name: renamed") {
+		t.Fatalf("renamed file lost data: %s", data)
+	}
+
+	if err := DeleteCollection(&created); err != nil {
+		t.Fatalf("DeleteCollection: %v", err)
+	}
+	if _, err := os.Stat(created.FilePath); !os.IsNotExist(err) {
+		t.Fatalf("deleted collection still exists: %v", err)
+	}
+}
+
+func TestCollectionCRUDRejectsUnsafeNamesAndPaths(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"", " ", ".", "..", "../escape", `..\escape`, "nested/name", "bad\x00name"} {
+		if _, err := CreateCollection(dir, name); !errors.Is(err, ErrInvalidName) {
+			t.Errorf("CreateCollection(%q) error = %v, want ErrInvalidName", name, err)
+		}
+	}
+	c := model.Collection{Name: "safe", FilePath: filepath.Join(dir, "safe.yaml")}
+	if err := RenameCollection(&c, "../escape"); !errors.Is(err, ErrInvalidName) {
+		t.Fatalf("RenameCollection unsafe error = %v, want ErrInvalidName", err)
+	}
+	c.FilePath = dir + string(os.PathSeparator) + ".." + string(os.PathSeparator) + "outside.yaml"
+	if err := DeleteCollection(&c); !errors.Is(err, ErrInvalidPath) {
+		t.Fatalf("DeleteCollection traversal error = %v, want ErrInvalidPath", err)
+	}
+}
+
+func TestRenameCollectionRejectsDestinationAndKeepsSource(t *testing.T) {
+	dir := t.TempDir()
+	first, err := CreateCollection(dir, "first")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := CreateCollection(dir, "second")
+	if err != nil {
+		t.Fatal(err)
+	}
+	first.Requests = []model.Request{{Name: "preserve", Method: "GET", URL: "https://example.test"}}
+	if err := SaveCollection(&first); err != nil {
+		t.Fatal(err)
+	}
+	if err := RenameCollection(&first, second.Name); !errors.Is(err, ErrCollectionExists) {
+		t.Fatalf("collision error = %v, want ErrCollectionExists", err)
+	}
+	if first.Name != "first" || first.FilePath != filepath.Join(dir, "first.yaml") {
+		t.Fatalf("model changed after failed rename: %#v", first)
+	}
+	loaded, err := LoadCollections(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded) != 2 {
+		t.Fatalf("loaded collections = %d, want 2", len(loaded))
+	}
+	if len(loaded[0].Requests) != 1 && len(loaded[1].Requests) != 1 {
+		t.Fatal("source request data lost after failed rename")
 	}
 }

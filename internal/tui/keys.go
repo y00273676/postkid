@@ -15,6 +15,7 @@ type keyMap struct {
 	NextTab  key.Binding
 	PrevTab  key.Binding
 	EditBody key.Binding
+	EditMeta key.Binding
 	Command  key.Binding
 	Back     key.Binding
 	New      key.Binding
@@ -37,6 +38,7 @@ var keys = keyMap{
 	NextTab:  key.NewBinding(key.WithKeys("tab")),
 	PrevTab:  key.NewBinding(key.WithKeys("shift+tab")),
 	EditBody: key.NewBinding(key.WithKeys("e")),
+	EditMeta: key.NewBinding(key.WithKeys("m")),
 	Command:  key.NewBinding(key.WithKeys(":")),
 	Back:     key.NewBinding(key.WithKeys("esc")),
 	New:      key.NewBinding(key.WithKeys("n")),
@@ -53,7 +55,7 @@ func (k keyMap) ShortHelp() []key.Binding {
 func (k keyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{k.Up, k.Down, k.Left, k.Right},
-		{k.Send, k.Save, k.EditBody},
+		{k.Send, k.Save, k.EditBody, k.EditMeta},
 		{k.NextTab, k.PrevTab, k.Command, k.Back},
 		{k.Help, k.Quit},
 	}

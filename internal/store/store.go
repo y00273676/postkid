@@ -34,6 +34,19 @@ var ErrInvalidPath = errors.New("invalid storage path")
 // ErrInvalidName 表示 collection/environment 名称不能作为安全的逻辑名称。
 var ErrInvalidName = errors.New("invalid storage name")
 
+// ErrCollectionExists 表示目标 collection 文件已经存在。
+var ErrCollectionExists = errors.New("collection already exists")
+
+// ErrCollectionNotFound 表示要操作的 collection 文件不存在。
+var ErrCollectionNotFound = errors.New("collection not found")
+
+// ErrAlreadyExists / ErrNotFound 是面向调用方的通用别名，保留更具体的
+// collection 错误值供 errors.Is 使用。
+var (
+	ErrAlreadyExists = ErrCollectionExists
+	ErrNotFound      = ErrCollectionNotFound
+)
+
 // LoadCollections 读取 dir 下所有 *.yaml collection 文件。
 func LoadCollections(dir string) ([]model.Collection, error) {
 	paths, err := yamlFiles(dir)
@@ -42,14 +55,21 @@ func LoadCollections(dir string) ([]model.Collection, error) {
 	}
 
 	out := make([]model.Collection, 0, len(paths))
+	seenNames := make(map[string]string, len(paths))
 	for _, path := range paths {
 		c, err := loadYAML[model.Collection](path)
 		if err != nil {
 			return nil, fmt.Errorf("load collection %q: %w", path, err)
 		}
-		if err := validateName(c.Name, "collection"); err != nil {
+		normalizedName, err := NormalizeCollectionName(c.Name)
+		if err != nil {
 			return nil, fmt.Errorf("load collection %q: %w", path, err)
 		}
+		if previous, ok := seenNames[normalizedName]; ok {
+			return nil, fmt.Errorf("load collection %q: duplicate name %q also used by %q", path, normalizedName, previous)
+		}
+		c.Name = normalizedName
+		seenNames[normalizedName] = path
 		c.FilePath = path
 		out = append(out, c)
 	}
@@ -64,14 +84,21 @@ func LoadEnvironments(dir string) ([]model.Environment, error) {
 	}
 
 	out := make([]model.Environment, 0, len(paths))
+	seenNames := make(map[string]string, len(paths))
 	for _, path := range paths {
 		e, err := loadYAML[model.Environment](path)
 		if err != nil {
 			return nil, fmt.Errorf("load environment %q: %w", path, err)
 		}
-		if err := validateName(e.Name, "environment"); err != nil {
+		normalizedName, err := NormalizeEnvironmentName(e.Name)
+		if err != nil {
 			return nil, fmt.Errorf("load environment %q: %w", path, err)
 		}
+		if previous, ok := seenNames[normalizedName]; ok {
+			return nil, fmt.Errorf("load environment %q: duplicate name %q also used by %q", path, normalizedName, previous)
+		}
+		e.Name = normalizedName
+		seenNames[normalizedName] = path
 		e.FilePath = path
 		out = append(out, e)
 	}
@@ -94,10 +121,196 @@ func SaveEnvironment(e *model.Environment) error {
 	if e == nil {
 		return errors.New("save environment: nil environment")
 	}
-	if err := validateName(e.Name, "environment"); err != nil {
+	normalizedName, err := NormalizeEnvironmentName(e.Name)
+	if err != nil {
 		return err
 	}
-	return saveYAML(e.FilePath, e)
+	updated := *e
+	updated.Name = normalizedName
+	return saveYAML(e.FilePath, &updated)
+}
+
+// NormalizeCollectionName 校验并规范化 collection 的逻辑名称。
+//
+// collection 名称不是任意文件路径：它只能是一个普通文件名，并且不能
+// 通过名称把写入导向 collections 目录之外。调用方可以传入可选的 .yaml
+// 后缀，但模型中的 Name 始终只保存逻辑名称，文件名始终使用一个 .yaml
+// 后缀。这也避免了 foo 与 foo.yaml 产生两个语义相同的 collection。
+func NormalizeCollectionName(name string) (string, error) {
+	name = strings.TrimSpace(name)
+	if strings.HasSuffix(strings.ToLower(name), yamlExtension) {
+		name = strings.TrimSpace(name[:len(name)-len(yamlExtension)])
+	}
+	if err := validateName(name, "collection"); err != nil {
+		return "", err
+	}
+	return name, nil
+}
+
+// CollectionPath 返回 name 对应的 collection 文件路径，并执行与保存相同
+// 的目录和名称安全校验。
+func CollectionPath(dir, name string) (string, error) {
+	if err := validateDirectoryPath(dir); err != nil {
+		return "", err
+	}
+	normalized, err := NormalizeCollectionName(name)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, normalized+yamlExtension), nil
+}
+
+// CreateCollection 在 dir 中创建一个空 collection。
+//
+// 创建使用同目录临时文件 + 硬链接，目标路径不会被覆盖；即使另一个
+// 进程同时创建同名文件，也只能有一个调用成功。返回的 Collection 已经
+// 带有可直接用于 SaveCollection 的 FilePath。
+func CreateCollection(dir, name string) (model.Collection, error) {
+	path, err := CollectionPath(dir, name)
+	if err != nil {
+		return model.Collection{}, err
+	}
+	normalized, _ := NormalizeCollectionName(name) // CollectionPath 已完成校验
+	c := model.Collection{
+		Name:      normalized,
+		Requests:  []model.Request{},
+		FilePath:  path,
+		Variables: nil,
+	}
+	data, err := yaml.Marshal(c)
+	if err != nil {
+		return model.Collection{}, fmt.Errorf("marshal collection: %w", err)
+	}
+	if err := atomicCreateFile(path, data, 0o600); err != nil {
+		return model.Collection{}, err
+	}
+	return c, nil
+}
+
+// RenameCollection 原子地重命名 collection 文件，并同步 YAML 中的 Name。
+//
+// c 只有在整个操作成功后才会被修改。旧文件先移动到同目录备份，再将
+// 已序列化的新内容放到目标路径；写入失败会尝试恢复旧路径，避免请求和
+// 变量数据因为重命名而丢失。
+func RenameCollection(c *model.Collection, newName string) error {
+	if c == nil {
+		return errors.New("rename collection: nil collection")
+	}
+	normalized, err := NormalizeCollectionName(newName)
+	if err != nil {
+		return err
+	}
+	if err := validateYAMLPath(c.FilePath); err != nil {
+		return err
+	}
+	info, err := os.Lstat(c.FilePath)
+	if os.IsNotExist(err) {
+		return fmt.Errorf("%w: %q", ErrCollectionNotFound, c.FilePath)
+	}
+	if err != nil {
+		return fmt.Errorf("inspect collection %q: %w", c.FilePath, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return fmt.Errorf("%w: collection %q is not a regular file", ErrInvalidPath, c.FilePath)
+	}
+
+	dir := filepath.Dir(c.FilePath)
+	destination, err := CollectionPath(dir, normalized)
+	if err != nil {
+		return err
+	}
+	if sameCollectionPath(c.FilePath, destination) {
+		// The filename already has the desired spelling. We may still need to
+		// repair the YAML Name field, so use the same atomic save path without
+		// changing the caller's value until persistence succeeds.
+		updated := *c
+		updated.Name = normalized
+		updated.FilePath = c.FilePath
+		if err := SaveCollection(&updated); err != nil {
+			return err
+		}
+		c.Name = updated.Name
+		c.FilePath = updated.FilePath
+		return nil
+	}
+
+	if destinationInfo, err := os.Lstat(destination); err == nil {
+		// A symlink is an occupied path too; never replace it.
+		_ = destinationInfo
+		return fmt.Errorf("%w: %q", ErrCollectionExists, destination)
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("inspect collection destination %q: %w", destination, err)
+	}
+
+	updated := *c
+	updated.Name = normalized
+	updated.FilePath = destination
+	data, err := yaml.Marshal(updated)
+	if err != nil {
+		return fmt.Errorf("marshal collection: %w", err)
+	}
+	tmpName, err := collectionWriteTempFile(dir, data, info.Mode().Perm(), ".postkid-rename-*.tmp")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmpName)
+
+	backupName, err := collectionReserveTempName(dir, ".postkid-rename-*.bak")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(backupName)
+	if err := os.Rename(c.FilePath, backupName); err != nil {
+		return fmt.Errorf("move collection to backup: %w", err)
+	}
+	if err := os.Rename(tmpName, destination); err != nil {
+		restoreErr := os.Rename(backupName, c.FilePath)
+		if restoreErr != nil {
+			return fmt.Errorf("rename collection: %w (restore old file: %v)", err, restoreErr)
+		}
+		return fmt.Errorf("rename collection: %w", err)
+	}
+	c.Name = updated.Name
+	c.FilePath = updated.FilePath
+	// The rename is already committed. Backup cleanup is best effort: reporting
+	// an error here would leave callers' cache stale even though the destination
+	// file is live.
+	_ = os.Remove(backupName)
+	return nil
+}
+
+// DeleteCollection removes the collection file represented by c. It refuses
+// symlinks and does not mutate c, allowing callers to update their cache only
+// after the filesystem operation succeeds.
+func DeleteCollection(c *model.Collection) error {
+	if c == nil {
+		return errors.New("delete collection: nil collection")
+	}
+	if err := validateYAMLPath(c.FilePath); err != nil {
+		return err
+	}
+	info, err := os.Lstat(c.FilePath)
+	if os.IsNotExist(err) {
+		return fmt.Errorf("%w: %q", ErrCollectionNotFound, c.FilePath)
+	}
+	if err != nil {
+		return fmt.Errorf("inspect collection %q: %w", c.FilePath, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return fmt.Errorf("%w: collection %q is not a regular file", ErrInvalidPath, c.FilePath)
+	}
+	if err := os.Remove(c.FilePath); err != nil {
+		return fmt.Errorf("delete collection %q: %w", c.FilePath, err)
+	}
+	return nil
+}
+
+// samePath compares paths after cleaning them without following symlinks.
+func sameCollectionPath(a, b string) bool {
+	if filepath.IsAbs(a) != filepath.IsAbs(b) {
+		return false
+	}
+	return filepath.Clean(a) == filepath.Clean(b)
 }
 
 // yamlFiles 枚举目录中的 YAML 普通文件。
@@ -288,4 +501,91 @@ func atomicWriteFile(path string, data []byte, newMode os.FileMode) error {
 		_ = dirFile.Close()
 	}
 	return nil
+}
+
+// atomicCreateFile writes a new file without replacing an existing path. A
+// hard link is used for the final installation so the no-overwrite guarantee
+// also holds when another process creates the same path between our checks.
+func atomicCreateFile(path string, data []byte, mode os.FileMode) error {
+	if err := validateYAMLPath(path); err != nil {
+		return err
+	}
+	dir := filepath.Dir(path)
+	if err := validateDirectoryPath(dir); err != nil {
+		return err
+	}
+	if info, err := os.Lstat(path); err == nil {
+		_ = info
+		return fmt.Errorf("%w: %q", ErrCollectionExists, path)
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("inspect storage file %q: %w", path, err)
+	}
+	tmpName, err := collectionWriteTempFile(dir, data, mode, ".postkid-*.tmp")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmpName)
+	if err := os.Link(tmpName, path); err != nil {
+		if os.IsExist(err) {
+			return fmt.Errorf("%w: %q", ErrCollectionExists, path)
+		}
+		return fmt.Errorf("install storage file: %w", err)
+	}
+	if dirFile, err := os.Open(dir); err == nil {
+		_ = dirFile.Sync()
+		_ = dirFile.Close()
+	}
+	return nil
+}
+
+// writeTempFile creates and fully syncs a temporary file in dir. The caller
+// owns the returned path and is responsible for removing it after any rename.
+func collectionWriteTempFile(dir string, data []byte, mode os.FileMode, pattern string) (string, error) {
+	tmp, err := os.CreateTemp(dir, pattern)
+	if err != nil {
+		return "", fmt.Errorf("create temporary storage file: %w", err)
+	}
+	tmpName := tmp.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(tmpName)
+		}
+	}()
+	if err := tmp.Chmod(mode); err != nil {
+		_ = tmp.Close()
+		return "", fmt.Errorf("set temporary storage permissions: %w", err)
+	}
+	if _, err := io.Copy(tmp, bytes.NewReader(data)); err != nil {
+		_ = tmp.Close()
+		return "", fmt.Errorf("write temporary storage file: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return "", fmt.Errorf("sync temporary storage file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return "", fmt.Errorf("close temporary storage file: %w", err)
+	}
+	cleanup = false
+	return tmpName, nil
+}
+
+// reserveTempName reserves a unique pathname without leaving a file at it.
+// It is used as a rename backup target, where os.Rename must be guaranteed not
+// to collide with an unrelated file.
+func collectionReserveTempName(dir, pattern string) (string, error) {
+	f, err := os.CreateTemp(dir, pattern)
+	if err != nil {
+		return "", fmt.Errorf("reserve temporary storage path: %w", err)
+	}
+	name := f.Name()
+	if err := f.Close(); err != nil {
+		_ = os.Remove(name)
+		return "", fmt.Errorf("close temporary storage path: %w", err)
+	}
+	if err := os.Remove(name); err != nil {
+		return "", fmt.Errorf("clear temporary storage path: %w", err)
+	}
+	return name, nil
 }

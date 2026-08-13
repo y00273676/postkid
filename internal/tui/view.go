@@ -18,6 +18,15 @@ func (m Model) View() string {
 	if m.showHelp {
 		return m.helpView()
 	}
+	if m.modal != nil {
+		return m.modalView()
+	}
+	if m.workspaceModal != nil {
+		return m.workspaceModalView()
+	}
+	if m.curlImport != nil {
+		return m.curlImportView()
+	}
 
 	listW := max(m.width*28/100, 24)
 	rightW := m.width - listW
@@ -44,6 +53,32 @@ func (m Model) View() string {
 	right := lipgloss.JoinVertical(lipgloss.Left, reqBox, respBox)
 	body := lipgloss.JoinHorizontal(lipgloss.Top, left, right)
 	return lipgloss.JoinVertical(lipgloss.Left, body, m.renderBottom())
+}
+
+// modalView renders a centered, focused card. Forms intentionally replace the
+// panel view while open: this gives text inputs enough room and makes the
+// modal boundary obvious in a narrow terminal too.
+func (m Model) modalView() string {
+	cardWidth := m.width - 8
+	if cardWidth < 36 {
+		cardWidth = 36
+	}
+	if cardWidth > 86 {
+		cardWidth = 86
+	}
+	card := borderStyle(true).
+		Width(cardWidth).
+		Padding(1, 2).
+		Render(m.modalContent())
+	screenWidth := m.width
+	if screenWidth < lipgloss.Width(card)+2 {
+		screenWidth = lipgloss.Width(card) + 2
+	}
+	screenHeight := m.height
+	if screenHeight < lipgloss.Height(card)+2 {
+		screenHeight = lipgloss.Height(card) + 2
+	}
+	return lipgloss.Place(screenWidth, screenHeight, lipgloss.Center, lipgloss.Center, card)
 }
 
 // renderRequest 渲染右上请求面板：方法+URL、tab bar、当前 tab 内容。
@@ -155,7 +190,7 @@ func (m Model) renderBottom() string {
 	}
 
 	hint := renderHints([][2]string{
-		{"s", "send"}, {"^s", "save"}, {":", "cmd"}, {"?", "help"}, {"q", "quit"},
+		{"s", "send"}, {"^s", "save"}, {"e", "edit tab"}, {"m", "method/url"}, {":", "cmd"}, {"?", "help"}, {"q", "quit"},
 	})
 	gap := m.width - lipgloss.Width(left) - lipgloss.Width(hint)
 	return left + barGap(gap) + hint
@@ -190,12 +225,17 @@ func (m Model) helpView() string {
 		{"请求", [][2]string{
 			{"s / ^r", "发送"},
 			{"^s", "保存"},
-			{"e", "编辑 body ($EDITOR)"},
+			{"e", "编辑当前 tab（Body 用 $EDITOR）"},
+			{"m", "编辑 Method / URL"},
 			{"n", "新建请求"},
 			{"d", "删除请求"},
 		}},
 		{"通用", [][2]string{
 			{":", "命令面板"},
+			{"collection new", "新建 Collection"},
+			{"collection rename/delete", "管理 Collection"},
+			{"env new/rename/delete", "管理 Environment"},
+			{"import curl", "导入 cURL"},
 			{"?", "帮助开关"},
 			{"q", "退出"},
 		}},

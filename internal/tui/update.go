@@ -105,11 +105,81 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.selectCurrent()
 		}
 		return m, nil
+
+	case NewRequestMsg:
+		m.openNewRequestModal()
+		return m, nil
+
+	case WorkspaceModalMsg:
+		m.openWorkspaceModal(msg)
+		return m, nil
+
+	case WorkspaceUpdatedMsg:
+		if msg.Resource == "collection" {
+			m.rebuildList()
+			m.list.ResetSelected()
+			m.selectCurrent()
+		}
+		m.err = nil
+		m.statusMsg = msg.Resource + " " + msg.Action + ": " + msg.Name
+		return m, nil
+
+	case CurlImportOpenMsg:
+		m.openCurlImportModal()
+		return m, nil
+
+	case CurlImportSavedMsg:
+		m.curlImport = nil
+		m.rebuildList()
+		m.list.ResetSelected()
+		m.selectCurrent()
+		m.err = nil
+		m.statusMsg = "imported " + msg.Collection + "/" + msg.Name
+		return m, nil
+
+	case CurlImportSaveFailedMsg:
+		if m.curlImport != nil {
+			m.curlImport.phase = curlImportTarget
+			if msg.Err != nil {
+				m.curlImport.saveErr = msg.Err.Error()
+			} else {
+				m.curlImport.saveErr = "save failed"
+			}
+			m.err = nil
+			return m, nil
+		}
+		m.err = msg.Err
+		return m, nil
 	}
 
 	// 命令面板模式下，所有键先交给 palette
 	if m.focus == FocusCommand {
 		return m.updatePalette(msg)
+	}
+
+	// Forms are fully modal.  Route every key to the active field before the
+	// global bindings so a typed `q`, `s`, or `d` can never quit, send, or
+	// delete a request by accident.
+	if m.modal != nil {
+		kmsg, ok := msg.(tea.KeyMsg)
+		if !ok {
+			return m, nil
+		}
+		return m.updateModal(kmsg)
+	}
+	if m.workspaceModal != nil {
+		kmsg, ok := msg.(tea.KeyMsg)
+		if !ok {
+			return m, nil
+		}
+		return m.updateWorkspaceModal(kmsg)
+	}
+	if m.curlImport != nil {
+		kmsg, ok := msg.(tea.KeyMsg)
+		if !ok {
+			return m, nil
+		}
+		return m.updateCurlImport(kmsg)
 	}
 
 	// 搜索和历史都是模态交互。它们必须在全局快捷键之前处理，
@@ -252,9 +322,11 @@ func (m *Model) moveFocus(msg tea.KeyMsg) {
 func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case key.Matches(msg, keys.New):
-		return m, m.newRequestCmd()
+		m.openNewRequestModal()
+		return m, nil
 	case key.Matches(msg, keys.Delete):
-		return m, m.deleteCurrentCmd()
+		m.openDeleteModal()
+		return m, nil
 	case key.Matches(msg, keys.Search):
 		m.searching = true
 		m.searchInput = textinput.New()
@@ -291,9 +363,30 @@ func (m Model) updateRequest(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case key.Matches(msg, keys.EditBody):
 		if m.curReq != nil {
-			m.tab = TabBody
-			return m, editor.Open(m.curReq.Body)
+			switch m.tab {
+			case TabParams:
+				m.modal = newKVModal(TabParams, m.curReq.Params)
+				m.modal.resize(m.width)
+			case TabHeaders:
+				m.modal = newKVModal(TabHeaders, m.curReq.Headers)
+				m.modal.resize(m.width)
+			case TabBody:
+				return m, editor.Open(m.curReq.Body)
+			case TabAuth:
+				m.modal = newAuthModal(m.curReq)
+				m.modal.resize(m.width)
+			}
 		}
+		return m, nil
+	case key.Matches(msg, keys.EditMeta):
+		if m.curReq != nil {
+			m.modal = newMetaModal(m.curReq)
+			m.modal.resize(m.width)
+		}
+		return m, nil
+	case key.Matches(msg, keys.Delete):
+		m.openDeleteModal()
+		return m, nil
 	}
 	return m, nil
 }
@@ -378,6 +471,12 @@ func (m *Model) resize() {
 	m.list.SetSize(listW-4, contentH-4)
 	m.viewport.Width = rightW - 4
 	m.viewport.Height = respH - 3 // 边框 2 + 状态行 1
+	if m.modal != nil {
+		m.modal.resize(m.width)
+	}
+	if m.workspaceModal != nil {
+		m.workspaceModal.resize(m.width)
+	}
 	if m.resp != nil {
 		m.setResponseViewportContent(false)
 	}
