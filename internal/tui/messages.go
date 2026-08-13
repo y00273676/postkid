@@ -3,7 +3,10 @@ package tui
 import "go.planetmeican.com/yangguang/postkid/internal/model"
 
 // ResponseMsg 携带一次 HTTP 请求的响应。
-type ResponseMsg struct{ Resp model.Response }
+type ResponseMsg struct {
+	Resp     model.Response
+	Resolved model.ResolvedRequest
+}
 
 // ErrorMsg 携带需要在状态栏显示的错误。
 type ErrorMsg struct{ Err error }
@@ -16,3 +19,16 @@ type sendingMsg struct{}
 
 // savedMsg 标记保存完成，用于清除 dirty 标记。
 type savedMsg struct{}
+
+// HistoryMsg 携带历史记录列表。
+type HistoryMsg struct {
+	Entries []model.HistoryEntry
+}
+
+// ListUpdatedMsg 通知 collection 数据变更，需要重建左侧列表。
+type ListUpdatedMsg struct{}
+
+// SearchModeMsg 进入/退出搜索模式。
+type SearchModeMsg struct {
+	Active bool
+}

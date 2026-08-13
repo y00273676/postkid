@@ -1,35 +1,58 @@
 # tpost
 
-Terminal-native API 客户端（TUI 版 Postman）。设计与决策见 [design.md](design.md)。
+[简体中文](README.zh-CN.md) | English
 
-## 安装
+A terminal-native API client built with Go and Bubble Tea — Postman for your terminal.
+
+## Features
+
+- Send `GET`, `POST`, `PUT`, `PATCH`, and `DELETE` requests
+- Edit query parameters, headers, request bodies, and authentication settings
+- Use Basic Auth and Bearer Token authentication
+- Organize requests into YAML collections
+- Manage environments and interpolate `{{variables}}`
+- Inspect status, latency, size, headers, and syntax-highlighted JSON responses
+- Browse request history and reload previous requests
+- Export requests as cURL commands
+- Navigate entirely from the keyboard
+
+## Installation
+
+Requirements: Go 1.26 or later.
 
 ```bash
+git clone https://github.com/y00273676/postkid.git
+cd postkid
 go build -o tpost ./cmd/tpost
-# 或安装到 PATH
+```
+
+To install `tpost` into your Go binary directory:
+
+```bash
 go install ./cmd/tpost
 ```
 
-## 用法
+## Quick start
 
 ```bash
-tpost                 # 用 ~/.tpost 数据目录
-tpost -dir testdata   # 用项目自带示例数据（指向 sandbox.example.com，仅演示）
-tpost -version
+./tpost                 # use ~/.tpost as the data directory
+./tpost -dir testdata   # launch with the included example data
+./tpost -version        # print the version
 ```
 
-首次运行会在 `~/.tpost/` 下自动创建 `collections/`、`environments/`、`history/` 目录。
+On first launch, tpost creates the following structure under `~/.tpost`:
 
-## 数据目录
-
-```
+```text
 ~/.tpost/
-├── config.yaml              # current_env 等配置
-├── collections/*.yaml       # 请求集合
-└── environments/*.yaml      # 环境变量
+├── config.yaml
+├── collections/
+├── environments/
+└── history/
 ```
 
-Collection 示例：
+## Configuration
+
+Create a collection in `~/.tpost/collections/order.yaml`:
 
 ```yaml
 name: order
@@ -40,12 +63,14 @@ requests:
     method: GET
     url: "{{base_url}}/api/orders/{{order_id}}"
     headers:
-      Authorization: "Bearer {{token}}"
+      Accept: application/json
     params:
       detail: "true"
+    auth_type: bearer
+    auth_token: "{{token}}"
 ```
 
-Environment 示例：
+Create an environment in `~/.tpost/environments/sandbox.yaml`:
 
 ```yaml
 name: sandbox
@@ -54,35 +79,61 @@ variables:
   token: dev-token-xxx
 ```
 
-变量优先级：`request > collection > environment`，同名前者覆盖后者。
+Select the environment in `~/.tpost/config.yaml`:
 
-## 键位
+```yaml
+current_env: sandbox
+```
 
-| 键 | 动作 |
+When the same variable exists in multiple scopes, tpost uses this precedence:
+
+```text
+request > collection > environment
+```
+
+## Keyboard shortcuts
+
+| Key | Action |
 | --- | --- |
-| `j` / `k` | 上下移动 |
-| `h` / `l` | Panel 切换（List ↔ Request ↔ Response） |
-| `Enter` | 打开选中请求 |
-| `Tab` / `Shift+Tab` | 切 Params → Headers → Body |
-| `e` | 用 `$EDITOR` 编辑 body |
-| `s` / `Ctrl+R` | 发送 |
-| `Ctrl+S` | 保存（回写 collection YAML） |
-| `:` | 命令面板 |
-| `?` | 帮助 |
-| `q` | 退出 |
+| `j` / `k` or `↑` / `↓` | Move up or down |
+| `h` / `l` or `←` / `→` | Switch panels |
+| `Enter` | Open the selected request |
+| `n` | Create a request |
+| `d` | Delete a request |
+| `/` | Search requests |
+| `Tab` / `Shift+Tab` | Switch between Params, Headers, Body, and Auth |
+| `e` | Edit the body with `$EDITOR` |
+| `s` / `Ctrl+R` | Send the request |
+| `Ctrl+S` | Save the request to its collection |
+| `:` | Open the command palette |
+| `?` | Show help |
+| `q` | Quit |
 
-## 命令面板
+## Command palette
 
+Press `:` and enter one of these commands:
+
+```text
+send             Send the current request
+save             Save the current request
+env <name>       Switch environments
+export curl      Copy the current request as a cURL command
+history          Browse request history
+new              Create a request
 ```
-:send            发送当前请求
-:save            保存
-:env <name>      切换环境
-```
 
-`new` / `export curl` / `import curl` / `history` 暂未实现。
+> cURL import is not implemented yet.
 
-## 测试
+## Development
+
+Run the test suite:
 
 ```bash
 go test ./...
 ```
+
+For architecture notes and the project roadmap, see [design.md](design.md).
+
+## License
+
+No license has been specified yet.

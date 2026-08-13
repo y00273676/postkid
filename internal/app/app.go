@@ -3,9 +3,11 @@
 package app
 
 import (
+	"encoding/base64"
 	"fmt"
 	"net/url"
 	"strings"
+	"time"
 
 	"go.planetmeican.com/yangguang/postkid/internal/config"
 	"go.planetmeican.com/yangguang/postkid/internal/env"
@@ -94,6 +96,21 @@ func (a *App) ResolveRequest(req model.Request, coll model.Collection) (model.Re
 	}
 	finalBody := sub(req.Body)
 
+	// 从 Auth 字段生成 Authorization header（不覆盖用户显式设置的值）
+	if _, hasAuth := finalHeaders["Authorization"]; !hasAuth && req.AuthType != "" && req.AuthType != model.AuthNone {
+		switch req.AuthType {
+		case model.AuthBearer:
+			subToken := sub(req.AuthToken)
+			finalHeaders["Authorization"] = "Bearer " + subToken
+		case model.AuthBasic:
+			subUser := sub(req.AuthUsername)
+			subPass := sub(req.AuthPassword)
+			auth := subUser + ":" + subPass
+			encoded := base64.StdEncoding.EncodeToString([]byte(auth))
+			finalHeaders["Authorization"] = "Basic " + encoded
+		}
+	}
+
 	if len(missing) > 0 {
 		return model.ResolvedRequest{}, fmt.Errorf("undefined variables: %s", strings.Join(missing, ", "))
 	}
@@ -113,11 +130,69 @@ func (a *App) Send(r model.ResolvedRequest) model.Response {
 	return a.engine.Send(r)
 }
 
+// RecordHistory 把一次请求及其响应记录到历史。
+func (a *App) RecordHistory(r model.ResolvedRequest, resp model.Response) {
+	hr := model.HistoryRequest{
+		Method:  r.Method,
+		URL:     r.URL,
+		Headers: r.Headers,
+		Body:    r.Body,
+	}
+	hs := model.HistoryResponse{}
+	if resp.Err == nil {
+		hs.StatusCode = resp.StatusCode
+		hs.Status = resp.Status
+		hs.Latency = resp.Latency.String()
+		hs.Size = resp.Size
+		hs.Headers = flattenHeaders(resp.Headers)
+		hs.Body = resp.Body
+	}
+	entry := model.HistoryEntry{
+		Timestamp: time.Now(),
+		Request:   hr,
+		Response:  hs,
+	}
+	_ = store.SaveHistory(a.cfg.HistoryDir(), entry)
+}
+
+// LoadHistory 返回最近的历史记录。
+func (a *App) LoadHistory() ([]model.HistoryEntry, error) {
+	return store.LoadHistory(a.cfg.HistoryDir())
+}
+
+// flattenHeaders 把 map[string][]string 转成 map[string]string（取第一个值）。
+func flattenHeaders(h map[string][]string) map[string]string {
+	out := make(map[string]string, len(h))
+	for k, v := range h {
+		if len(v) > 0 {
+			out[k] = v[0]
+		}
+	}
+	return out
+}
+
 // SaveRequest 把单个请求回写到其所属 collection 文件。
 func (a *App) SaveRequest(coll *model.Collection, req *model.Request) error {
 	for i := range coll.Requests {
 		if coll.Requests[i].Name == req.Name {
 			coll.Requests[i] = *req
+			break
+		}
+	}
+	return store.SaveCollection(coll)
+}
+
+// AddRequest 把一个新请求追加到 collection 末尾并保存。
+func (a *App) AddRequest(coll *model.Collection, req *model.Request) error {
+	coll.Requests = append(coll.Requests, *req)
+	return store.SaveCollection(coll)
+}
+
+// DeleteRequest 从 collection 中删除指定名称的请求并保存。
+func (a *App) DeleteRequest(coll *model.Collection, name string) error {
+	for i := range coll.Requests {
+		if coll.Requests[i].Name == name {
+			coll.Requests = append(coll.Requests[:i], coll.Requests[i+1:]...)
 			break
 		}
 	}

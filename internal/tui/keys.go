@@ -17,6 +17,9 @@ type keyMap struct {
 	EditBody key.Binding
 	Command  key.Binding
 	Back     key.Binding
+	New      key.Binding
+	Delete   key.Binding
+	Search   key.Binding
 }
 
 // enterKey 用于在列表中打开选中项。
@@ -36,6 +39,9 @@ var keys = keyMap{
 	EditBody: key.NewBinding(key.WithKeys("e")),
 	Command:  key.NewBinding(key.WithKeys(":")),
 	Back:     key.NewBinding(key.WithKeys("esc")),
+	New:      key.NewBinding(key.WithKeys("n")),
+	Delete:   key.NewBinding(key.WithKeys("d")),
+	Search:   key.NewBinding(key.WithKeys("/")),
 }
 
 // ShortHelp 返回状态栏展示的键位提示。

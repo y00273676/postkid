@@ -70,3 +70,28 @@ var ValidMethods = []string{"GET", "POST", "PUT", "PATCH", "DELETE"}
 func IsValidMethod(method string) bool {
 	return slices.Contains(ValidMethods, method)
 }
+
+// HistoryEntry 是历史记录中的一条，记录一次请求及其响应。
+type HistoryEntry struct {
+	Timestamp time.Time      `json:"timestamp"`
+	Request   HistoryRequest  `json:"request"`
+	Response  HistoryResponse `json:"response"`
+}
+
+// HistoryRequest 是历史记录中保存的请求快照。
+type HistoryRequest struct {
+	Method  string            `json:"method"`
+	URL     string            `json:"url"`
+	Headers map[string]string `json:"headers"`
+	Body    string            `json:"body"`
+}
+
+// HistoryResponse 是历史记录中保存的响应快照。
+type HistoryResponse struct {
+	StatusCode int               `json:"status_code"`
+	Status     string            `json:"status"`
+	Latency    string            `json:"latency"` // time.Duration 序列化为字符串
+	Size       int64             `json:"size"`
+	Headers    map[string]string `json:"headers"`
+	Body       string            `json:"body"`
+}

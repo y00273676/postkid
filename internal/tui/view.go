@@ -3,35 +3,12 @@ package tui
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
 
 	"go.planetmeican.com/yangguang/postkid/internal/model"
 )
-
-var (
-	accent  = lipgloss.Color("63")
-	muted   = lipgloss.Color("240")
-	danger  = lipgloss.Color("203")
-	success = lipgloss.Color("42")
-
-	promptStyle = lipgloss.NewStyle().Foreground(accent).Bold(true)
-
-	titleStyle  = lipgloss.NewStyle().Bold(true).Foreground(accent)
-	tabActive   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("15")).Background(accent).Padding(0, 1)
-	tabInactive = lipgloss.NewStyle().Foreground(muted).Padding(0, 1)
-	dirtyMark   = lipgloss.NewStyle().Foreground(danger).Bold(true)
-	errStyle    = lipgloss.NewStyle().Foreground(danger)
-	okStyle     = lipgloss.NewStyle().Foreground(success)
-)
-
-func borderStyle(focused bool) lipgloss.Style {
-	fg := muted
-	if focused {
-		fg = accent
-	}
-	return lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(fg).Padding(0, 1)
-}
 
 // View 渲染整个界面。
 func (m Model) View() string {
@@ -48,18 +25,20 @@ func (m Model) View() string {
 	reqH := max(contentH*45/100, 6)
 	respH := max(contentH-reqH, 3)
 
+	// 注意：lipgloss 的 Width/Height 含 padding 但不含 border，
+	// 面板外宽 = Width + 2，文本可用宽 = Width - 2（横向 padding）。
 	left := borderStyle(m.focus == FocusList).
-		Width(listW).Height(contentH).
+		Width(listW - 2).Height(contentH - 2).
 		Render(m.list.View())
 
-	reqContent := m.renderRequest(rightW-2, reqH-2)
+	reqContent := m.renderRequest(rightW-4, reqH-2)
 	reqBox := borderStyle(m.focus == FocusRequest).
-		Width(rightW).Height(reqH).
+		Width(rightW - 2).Height(reqH - 2).
 		Render(reqContent)
 
 	respContent := m.renderResponse()
 	respBox := borderStyle(m.focus == FocusResponse).
-		Width(rightW).Height(respH).
+		Width(rightW - 2).Height(respH - 2).
 		Render(respContent)
 
 	right := lipgloss.JoinVertical(lipgloss.Left, reqBox, respBox)
@@ -81,7 +60,7 @@ func (m Model) renderRequest(width, height int) string {
 			url = r.URL
 		}
 	}
-	top := fmt.Sprintf("%s  %s", okStyle.Render(method), truncate(url, width-len(method)-2))
+	top := methodBadge(method) + " " + urlStyle.Render(truncate(url, width-8))
 
 	tabs := m.renderTabs()
 	content := m.renderTabContent(height - 2)
@@ -90,13 +69,13 @@ func (m Model) renderRequest(width, height int) string {
 }
 
 func (m Model) renderTabs() string {
-	names := []string{"Params", "Headers", "Body"}
+	names := []string{"Params", "Headers", "Body", "Auth"}
 	var parts []string
 	for i, n := range names {
 		if tab(i) == m.tab {
-			parts = append(parts, tabActive.Render(n))
+			parts = append(parts, tabActive.Render(" "+n+" "))
 		} else {
-			parts = append(parts, tabInactive.Render(n))
+			parts = append(parts, tabInactive.Render(" "+n+" "))
 		}
 	}
 	return strings.Join(parts, " ")
@@ -112,67 +91,126 @@ func (m Model) renderTabContent(height int) string {
 	case TabBody:
 		body := strings.TrimRight(m.curReq.Body, "\n")
 		if body == "" {
-			lines = []string{tabInactive.Render("(empty — press e to edit in $EDITOR)")}
+			lines = []string{mutedStyle.Render("(empty — press e to edit in $EDITOR)")}
 		} else {
-			lines = truncateLines(strings.Split(body, "\n"), height)
+			lines = truncateLines(strings.Split(HighlightJSON(body), "\n"), height)
 		}
+	case TabAuth:
+		lines = renderAuth(m.curReq, height)
 	}
 	return strings.Join(lines, "\n")
 }
 
-// renderResponse 渲染右下响应面板：状态行 + body。
+// renderResponse 渲染右下响应面板：历史列表 / 状态行 + body。
 func (m Model) renderResponse() string {
+	if m.showHistory {
+		return m.renderHistory()
+	}
 	if m.sending {
-		return titleStyle.Render("sending…")
+		return lipgloss.NewStyle().Foreground(colAccent).Render(m.spinner.View() + " sending…")
 	}
 	if m.resp == nil {
 		if m.err != nil {
 			return errStyle.Render(m.err.Error())
 		}
-		return tabInactive.Render("(no response yet — press s to send)")
+		return mutedStyle.Render("(no response yet — press s to send)")
 	}
-	head := formatStatusLine(*m.resp)
+	head := renderStatusHead(*m.resp)
 	return lipgloss.JoinVertical(lipgloss.Left, head, m.viewport.View())
 }
 
-// renderBottom 渲染底部状态栏 / 命令面板。
+// renderStatusHead 响应面板顶行：状态徽章 + 延迟/大小。
+func renderStatusHead(r model.Response) string {
+	meta := mutedStyle.Render(fmt.Sprintf("%s  %s",
+		r.Latency.Round(0).String(), humanBytes(r.Size)))
+	return statusBadge(r.Status, r.StatusCode) + "  " + meta
+}
+
+// renderBottom 渲染底部状态栏 / 命令面板 / 搜索框。
+// 所有分段自带底色，避免外层包裹时 ANSI reset 破坏背景。
 func (m Model) renderBottom() string {
 	if m.focus == FocusCommand {
-		return m.palette.View()
+		return m.barLine(m.palette.View())
 	}
-	left := m.statusMsg
+	if m.searching {
+		return m.barLine(m.searchInput.View())
+	}
+
+	var left string
 	if m.err != nil {
-		left = errStyle.Render(m.err.Error())
+		left = barErrStyle.Render(m.err.Error())
+	} else {
+		left = statusBarStyle.Render(m.statusMsg)
 	}
 	if m.dirty {
-		left = dirtyMark.Render("* ") + left
+		left = barDirtyStyle.Render("● ") + left
 	}
-	hint := tabInactive.Render("s send  : cmd  ? help  q quit")
-	return lipgloss.JoinHorizontal(lipgloss.Left, left, strings.Repeat(" ", max(0, m.width-len(left)-len(hint))), hint)
+
+	hint := renderHints([][2]string{
+		{"s", "send"}, {"^s", "save"}, {":", "cmd"}, {"?", "help"}, {"q", "quit"},
+	})
+	gap := m.width - lipgloss.Width(left) - lipgloss.Width(hint)
+	return left + barGap(gap) + hint
 }
 
-// helpView 渲染 ? 帮助覆盖层。
+// barLine 把命令面板/搜索输入行补齐成整行状态栏。
+func (m Model) barLine(content string) string {
+	return content + barGap(m.width-lipgloss.Width(content))
+}
+
+func renderHints(pairs [][2]string) string {
+	var parts []string
+	for _, p := range pairs {
+		parts = append(parts, hintKeyStyle.Render(p[0])+hintDescStyle.Render(" "+p[1]))
+	}
+	return strings.Join(parts, hintSepStyle.Render("  "))
+}
+
+// helpView 渲染 ? 帮助：居中卡片，按键分组。
 func (m Model) helpView() string {
-	rows := []string{
-		titleStyle.Render("tpost — key bindings"),
-		"",
-		"  j/k       上下移动",
-		"  h/l       Panel 切换",
-		"  Enter     打开 Request",
-		"  Tab       切 Params → Headers → Body",
-		"  e         Edit body ($EDITOR)",
-		"  s/Ctrl+R  Send",
-		"  Ctrl+S    Save",
-		"  :         Command palette",
-		"  q         Quit",
-		"  ?         Toggle help",
-		"",
-		tabInactive.Render("press ? to close"),
+	groups := []struct {
+		name  string
+		binds [][2]string
+	}{
+		{"导航", [][2]string{
+			{"j / k", "上下移动"},
+			{"h / l", "Panel 切换"},
+			{"Enter", "打开请求"},
+			{"/", "搜索"},
+			{"Tab", "切 Params → Headers → Body → Auth"},
+		}},
+		{"请求", [][2]string{
+			{"s / ^r", "发送"},
+			{"^s", "保存"},
+			{"e", "编辑 body ($EDITOR)"},
+			{"n", "新建请求"},
+			{"d", "删除请求"},
+		}},
+		{"通用", [][2]string{
+			{":", "命令面板"},
+			{"?", "帮助开关"},
+			{"q", "退出"},
+		}},
 	}
-	return lipgloss.JoinVertical(lipgloss.Left, rows...)
+
+	var rows []string
+	rows = append(rows, titleStyle.Render("tpost — key bindings"))
+	for _, g := range groups {
+		rows = append(rows, "", keyStyle.Render(g.name))
+		for _, b := range g.binds {
+			rows = append(rows, fmt.Sprintf("  %s  %s",
+				lipgloss.NewStyle().Foreground(colAccent).Width(8).Render(b[0]),
+				mutedStyle.Render(b[1])))
+		}
+	}
+	rows = append(rows, "", mutedStyle.Render("press ? to close"))
+
+	card := borderStyle(true).Padding(0, 2).Render(
+		lipgloss.JoinVertical(lipgloss.Left, rows...))
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, card)
 }
 
-// formatStatusLine 把响应汇总成一行：200 OK  126ms  1.4KB
+// formatStatusLine 把响应汇总成一行：200 OK  126ms  1.4KB（状态栏用，无徽章底色）
 func formatStatusLine(r model.Response) string {
 	style := okStyle
 	if r.StatusCode >= 400 {
@@ -198,19 +236,57 @@ func humanBytes(n int64) string {
 
 // ---- 渲染辅助 ----
 
+// renderKV 渲染 key: value 列表，key 列对齐并上色。
 func renderKV(m map[string]string, height int) []string {
 	if len(m) == 0 {
-		return []string{tabInactive.Render("(empty)")}
+		return []string{mutedStyle.Render("(empty)")}
 	}
 	keys := sortedKeys(m)
+	maxK := 0
+	for _, k := range keys {
+		if len(k) > maxK {
+			maxK = len(k)
+		}
+	}
 	var lines []string
 	for _, k := range keys {
-		lines = append(lines, fmt.Sprintf("%s: %s", k, m[k]))
+		lines = append(lines,
+			keyStyle.Render(fmt.Sprintf("%-*s", maxK, k))+
+				punctStyle.Render(" : ")+
+				valueStyle.Render(m[k]))
 		if len(lines) >= height {
 			break
 		}
 	}
 	return truncateLines(lines, height)
+}
+
+func renderAuth(req *model.Request, height int) []string {
+	_ = height
+	switch req.AuthType {
+	case model.AuthBasic:
+		return []string{
+			keyStyle.Render("Basic Auth"),
+			"",
+			keyStyle.Render("Username") + punctStyle.Render(" : ") + valueStyle.Render(req.AuthUsername),
+			keyStyle.Render("Password") + punctStyle.Render(" : ") + mutedStyle.Render(maskSecret(req.AuthPassword)),
+		}
+	case model.AuthBearer:
+		return []string{
+			keyStyle.Render("Bearer Token"),
+			"",
+			keyStyle.Render("Token") + punctStyle.Render(" : ") + mutedStyle.Render(maskSecret(req.AuthToken)),
+		}
+	default:
+		return []string{mutedStyle.Render("(none — edit YAML to set auth_type)")}
+	}
+}
+
+func maskSecret(s string) string {
+	if len(s) <= 4 {
+		return "****"
+	}
+	return s[:2] + strings.Repeat("*", len(s)-4) + s[len(s)-2:]
 }
 
 func sortedKeys(m map[string]string) []string {
@@ -244,4 +320,48 @@ func truncate(s string, max int) string {
 		return s
 	}
 	return s[:max-1] + "…"
+}
+
+// renderHistory 渲染历史记录列表。
+func (m Model) renderHistory() string {
+	var b strings.Builder
+	b.WriteString(titleStyle.Render("History"))
+	b.WriteString("\n\n")
+	for i, entry := range m.historyEntries {
+		status := mutedStyle.Render(" --- ")
+		if entry.Response.StatusCode > 0 {
+			status = statusBadge(entry.Response.Status, entry.Response.StatusCode)
+		}
+		line := fmt.Sprintf("%s %s %s",
+			methodBadge(entry.Request.Method),
+			truncate(entry.Request.URL, 50),
+			status)
+		meta := mutedStyle.Render(fmt.Sprintf("        %s  %s",
+			relativeTime(entry.Timestamp), entry.Response.Latency))
+		if i == m.historyIdx {
+			line = selectedRowStyle.Render("▎" + line)
+		} else {
+			line = " " + line
+		}
+		b.WriteString(line)
+		b.WriteString("\n")
+		b.WriteString(meta)
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+// relativeTime 返回一个人类可读的过去时间，如 "2m ago"、"1h ago"。
+func relativeTime(t time.Time) string {
+	d := time.Since(t)
+	switch {
+	case d < time.Minute:
+		return "just now"
+	case d < time.Hour:
+		return fmt.Sprintf("%dm ago", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh ago", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
+	}
 }

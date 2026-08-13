@@ -4,8 +4,12 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/atotto/clipboard"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/bubbles/key"
+
+	"go.planetmeican.com/yangguang/postkid/internal/app"
+	"go.planetmeican.com/yangguang/postkid/internal/model"
 )
 
 // updatePalette 处理命令面板模式下的所有消息。
@@ -59,10 +63,38 @@ func (m Model) executeCommand(input string) tea.Cmd {
 			return m.errorCmd(err)
 		}
 		return m.info("env switched to " + arg)
-	case "new", "export", "history", "import":
+	case "export":
+		if arg != "curl" {
+			return m.info("usage: export curl")
+		}
+		return m.exportCurl()
+	case "history":
+		return m.showHistoryCmd()
+	case "new":
+		return m.newRequestCmd()
+	case "import":
 		return m.info(cmd + ": not implemented")
 	}
 	return m.info("unknown command: " + cmd)
+}
+
+// exportCurl 把当前请求转为 curl 命令并复制到剪贴板。
+func (m Model) exportCurl() tea.Cmd {
+	if m.curReq == nil || m.curColl == nil {
+		return m.errorCmd(fmt.Errorf("no request selected"))
+	}
+	req := *m.curReq
+	coll := *m.curColl
+	resolved, err := m.app.ResolveRequest(req, coll)
+	if err != nil {
+		return m.errorCmd(err)
+	}
+	curl := app.ExportCurl(resolved)
+	if err := clipboard.WriteAll(curl); err != nil {
+		// 剪贴板不可用时，在状态栏显示 curl 命令
+		return m.info("curl: " + curl)
+	}
+	return m.info("curl command copied to clipboard")
 }
 
 // sendCurrent 解析并发送当前请求，异步返回 ResponseMsg。
@@ -79,7 +111,10 @@ func (m Model) sendCurrent() tea.Cmd {
 	app := m.app
 	return tea.Batch(
 		func() tea.Msg { return sendingMsg{} },
-		func() tea.Msg { return ResponseMsg{Resp: app.Send(resolved)} },
+		func() tea.Msg {
+			resp := app.Send(resolved)
+			return ResponseMsg{Resp: resp, Resolved: resolved}
+		},
 	)
 }
 
@@ -105,4 +140,55 @@ func (m Model) info(text string) tea.Cmd {
 
 func (m Model) errorCmd(err error) tea.Cmd {
 	return func() tea.Msg { return ErrorMsg{Err: err} }
+}
+
+// showHistoryCmd 加载历史记录并切换到历史浏览模式。
+func (m Model) showHistoryCmd() tea.Cmd {
+	entries, err := m.app.LoadHistory()
+	if err != nil {
+		return m.errorCmd(err)
+	}
+	if len(entries) == 0 {
+		return m.info("no history yet")
+	}
+	// 返回一个消息让 Update 处理
+	return func() tea.Msg {
+		return HistoryMsg{Entries: entries}
+	}
+}
+
+// newRequestCmd 在当前 collection 中创建一个新请求并保存。
+func (m Model) newRequestCmd() tea.Cmd {
+	if m.curColl == nil {
+		return m.errorCmd(fmt.Errorf("no collection selected"))
+	}
+	coll := m.curColl
+	req := model.Request{
+		Name:   "new-request",
+		Method: "GET",
+		URL:    "https://",
+	}
+	app := m.app
+	return func() tea.Msg {
+		if err := app.AddRequest(coll, &req); err != nil {
+			return ErrorMsg{Err: err}
+		}
+		return ListUpdatedMsg{}
+	}
+}
+
+// deleteCurrentCmd 删除当前选中的请求。
+func (m Model) deleteCurrentCmd() tea.Cmd {
+	if m.curReq == nil || m.curColl == nil {
+		return m.errorCmd(fmt.Errorf("no request selected"))
+	}
+	name := m.curReq.Name
+	coll := m.curColl
+	app := m.app
+	return func() tea.Msg {
+		if err := app.DeleteRequest(coll, name); err != nil {
+			return ErrorMsg{Err: err}
+		}
+		return ListUpdatedMsg{}
+	}
 }

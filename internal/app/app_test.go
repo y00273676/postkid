@@ -1,6 +1,7 @@
 package app
 
 import (
+	"encoding/base64"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"testing"
 
 	"go.planetmeican.com/yangguang/postkid/internal/config"
+	"go.planetmeican.com/yangguang/postkid/internal/model"
 )
 
 // setupDataDir 用 testdata 内容填充一个临时数据目录，返回 Config。
@@ -149,5 +151,105 @@ func TestSend_Integration(t *testing.T) {
 	}
 	if !strings.Contains(resp.Body, "/api/orders/123456") {
 		t.Errorf("body missing path: %s", resp.Body)
+	}
+}
+
+func TestResolveRequest_AuthBearer(t *testing.T) {
+	cfg := setupDataDir(t)
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	_ = a.SetEnvironment("sandbox")
+
+	coll := a.Collections()[0]
+	req := coll.Requests[0] // get-order has auth_type=bearer, auth_token={{token}}
+
+	resolved, err := a.ResolveRequest(req, coll)
+	if err != nil {
+		t.Fatalf("ResolveRequest: %v", err)
+	}
+	want := "Bearer dev-token-xxx"
+	if resolved.Headers["Authorization"] != want {
+		t.Errorf("Authorization = %q, want %q", resolved.Headers["Authorization"], want)
+	}
+}
+
+func TestResolveRequest_AuthBearer_ExplicitHeaderOverrides(t *testing.T) {
+	cfg := setupDataDir(t)
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	_ = a.SetEnvironment("sandbox")
+
+	coll := a.Collections()[0]
+	req := coll.Requests[0]
+	// 用户在 Headers 中显式设置 Authorization，应覆盖 auth 字段
+	if req.Headers == nil {
+		req.Headers = make(map[string]string)
+	}
+	req.Headers["Authorization"] = "Bearer explicit-token"
+
+	resolved, err := a.ResolveRequest(req, coll)
+	if err != nil {
+		t.Fatalf("ResolveRequest: %v", err)
+	}
+	want := "Bearer explicit-token"
+	if resolved.Headers["Authorization"] != want {
+		t.Errorf("Authorization = %q, want %q", resolved.Headers["Authorization"], want)
+	}
+}
+
+func TestResolveRequest_AuthBasic(t *testing.T) {
+	cfg := setupDataDir(t)
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	_ = a.SetEnvironment("sandbox")
+
+	coll := a.Collections()[0]
+	req := model.Request{
+		Name:         "basic-test",
+		Method:       "GET",
+		URL:          "{{base_url}}/api/test",
+		AuthType:     model.AuthBasic,
+		AuthUsername: "admin",
+		AuthPassword: "secret123",
+	}
+
+	resolved, err := a.ResolveRequest(req, coll)
+	if err != nil {
+		t.Fatalf("ResolveRequest: %v", err)
+	}
+	want := "Basic " + base64.StdEncoding.EncodeToString([]byte("admin:secret123"))
+	if resolved.Headers["Authorization"] != want {
+		t.Errorf("Authorization = %q, want %q", resolved.Headers["Authorization"], want)
+	}
+}
+
+func TestResolveRequest_AuthNone(t *testing.T) {
+	cfg := setupDataDir(t)
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	_ = a.SetEnvironment("sandbox")
+
+	coll := a.Collections()[0]
+	req := model.Request{
+		Name:     "no-auth-test",
+		Method:   "GET",
+		URL:      "{{base_url}}/api/test",
+		AuthType: model.AuthNone,
+	}
+
+	resolved, err := a.ResolveRequest(req, coll)
+	if err != nil {
+		t.Fatalf("ResolveRequest: %v", err)
+	}
+	if _, ok := resolved.Headers["Authorization"]; ok {
+		t.Errorf("Authorization header should not be set for auth_type=none")
 	}
 }

@@ -72,18 +72,18 @@ App (application 层门面，不 import bubbletea，可被 CLI/CI 复用)
 | Query Params | ✅ Params tab 展示 |
 | Headers | ✅ Headers tab 展示 |
 | JSON/Text Body | ✅ Body tab 展示 + $EDITOR 编辑 |
-| Auth (Basic/Bearer) | ❌ 仅通过 Headers 手动配置，无 Auth tab |
+| Auth (Basic/Bearer) | ✅ Auth tab，发送时自动生成 Authorization header |
 | Response Body | ✅ JSON pretty-print |
 | Status/Latency/Size | ✅ 状态栏展示 |
 | Collections | ✅ 加载、选择、保存回写 |
 | Environment | ✅ 切换（`:env`）、持久化 current_env |
 | `{{variable}}` 变量 | ✅ 三层优先级合并 |
-| History | ❌ |
-| curl 导出 | ❌ |
+| History | ✅ `:history` 浏览，发送后自动记录到 jsonl |
+| curl 导出 | ✅ `:export curl` 复制到剪贴板 |
 | curl 导入 | ❌ (V1.5) |
-| New Request / Delete | ❌ (n/d 键未实现) |
-| Search | ❌ (/) |
-| Auth tab | ❌ 设计中有 Params/Headers/Body/Auth 四 tab，当前只有前三 |
+| New Request | ✅ `:new` / `n` 键 |
+| Delete Request | ✅ `d` 键 |
+| Search | ✅ `/` 键实时过滤列表 |
 
 ## 关键设计决策
 
@@ -92,3 +92,5 @@ App (application 层门面，不 import bubbletea，可被 CLI/CI 复用)
 - App 层不 import bubbletea，未来可被 CLI/CI 复用
 - 原子写用临时文件 + rename 防止崩溃损坏
 - 请求发送是同步的，TUI 中用 `tea.Batch` 异步执行
+- Auth 字段 → Authorization header 在 ResolveRequest 中处理，不覆盖显式 Header
+- History 用 JSONL 追加写，最多保留 500 条

@@ -7,8 +7,9 @@ requests:
   - name: get-order
     method: GET
     url: "{{base_url}}/api/orders/{{order_id}}"
+    auth_type: bearer
+    auth_token: "{{token}}"
     headers:
-      Authorization: "Bearer {{token}}"
       Accept: "application/json"
     params:
       detail: "true"

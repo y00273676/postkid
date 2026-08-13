@@ -47,8 +47,10 @@ func TestViewRenders(t *testing.T) {
 	m.selectCurrent() // 选中第一项以渲染请求面板
 
 	out := m.View()
-	for _, want := range []string{"Collections", "Params", "Headers", "Body"} {
-		if !strings.Contains(out, want) {
+	// lipgloss 对 underline 样式会逐字符输出 ANSI，先剥离再断言纯文本
+	plain := stripANSI(out)
+	for _, want := range []string{"Collections", "Params", "Headers", "Body", "Auth"} {
+		if !strings.Contains(plain, want) {
 			t.Errorf("View missing %q\n%s", want, out)
 		}
 	}
@@ -121,4 +123,27 @@ func TestUpdateQuit(t *testing.T) {
 	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
 	// tea.Quit 是一个特殊的 Cmd，验证 cmd 非 nil 即可
 	_ = cmd
+}
+
+func TestAuthTabRendersBearer(t *testing.T) {
+	cfg := copyTestData(t)
+	a, err := app.New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = a.SetEnvironment("sandbox")
+
+	m := New(a)
+	m.width, m.height = 120, 40
+	m.resize()
+	m.selectCurrent() // get-order has auth_type=bearer
+	m.tab = TabAuth
+
+	out := m.View()
+	if !strings.Contains(out, "Bearer Token") {
+		t.Errorf("Auth tab should show 'Bearer Token', got:\n%s", out)
+	}
+	if !strings.Contains(out, "{{*****}}") {
+		t.Errorf("Auth tab should show masked token {{*****}}, got:\n%s", out)
+	}
 }
