@@ -14,6 +14,7 @@
 - 查看状态码、耗时、响应大小、响应头和带语法高亮的 JSON 响应
 - 浏览请求历史并重新载入历史请求
 - 将浏览器“复制为 cURL”的命令导入 Collection
+- 导入 Postman Collection v2.1 JSON 文件
 - 将请求导出为 cURL 命令
 - 全键盘操作
 
@@ -134,6 +135,7 @@ collection new   创建 Collection
 collection rename 重命名 Collection
 collection delete 确认后删除 Collection
 import curl      粘贴、预览并保存 cURL 命令
+import postman <路径> 导入 Postman Collection v2.1 JSON 文件
 export curl      将当前请求复制为 cURL 命令
 history          浏览请求历史
 new              新建请求
@@ -142,6 +144,11 @@ new              新建请求
 `import curl` 会打开多行粘贴表单。按 `Ctrl+S` 解析并预览请求，选择
 Collection、填写请求名称后再次按 `Ctrl+S` 保存。导入过程不会执行命令，
 也不会读取 `@file` 参数。
+
+`import postman <路径>` 会递归导入请求、Collection 变量、查询参数、Header、
+受支持的 Body 以及 Basic/Bearer 认证，并将 Folder 路径保留在扁平化后的请求名中。
+不支持的方法、认证/Body 模式和文件 form-data 会明确报错；已有 Collection
+不会被覆盖。
 
 ## 开发
 

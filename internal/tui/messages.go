@@ -67,3 +67,19 @@ type CurlImportSavedMsg struct {
 // CurlImportSaveFailedMsg keeps the import target form open after persistence
 // fails (for example, when the chosen request name already exists).
 type CurlImportSaveFailedMsg struct{ Err error }
+
+// PostmanImportSavedMsg reports a successfully imported and persisted
+// Postman collection. Imported is the number of requests in the persisted
+// collection and is used for the concise status-bar summary.
+type PostmanImportSavedMsg struct {
+	Collection string
+	Imported   int
+	Path       string
+}
+
+// PostmanImportSaveFailedMsg reports a read, parse, or persistence failure.
+// The current list selection remains untouched when this message is handled.
+type PostmanImportSaveFailedMsg struct {
+	Path string
+	Err  error
+}

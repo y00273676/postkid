@@ -81,6 +81,7 @@ App (application 层门面，不 import bubbletea，可被 CLI/CI 复用)
 | History | ✅ `:history` 浏览，发送后自动记录到 jsonl |
 | curl 导出 | ✅ `:export curl` 复制到剪贴板 |
 | curl 导入 | ✅ `:import curl` 安全解析、预览并保存 |
+| Postman Collection 导入 | ✅ `:import postman <path>` 解析 v2.1 JSON 并原子保存 |
 | New Request | ✅ `:new` / `n` 表单选择 Collection 并填写请求信息 |
 | Delete Request | ✅ `d` 键并确认 |
 | Search | ✅ `/` 键实时过滤列表 |

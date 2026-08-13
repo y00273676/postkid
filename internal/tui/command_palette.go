@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"strings"
+	"unicode"
 
 	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/bubbles/key"
@@ -99,12 +100,53 @@ func (m Model) executeCommand(input string) tea.Cmd {
 		}
 		return m.openWorkspaceCommand("environment", arg, strings.Join(args[1:], " "))
 	case "import":
-		if strings.ToLower(arg) != "curl" || len(args) != 1 {
-			return m.info("usage: import curl")
+		switch strings.ToLower(arg) {
+		case "curl":
+			if len(args) != 1 {
+				return m.info("usage: import curl")
+			}
+			return m.openCurlImportCommand()
+		case "postman":
+			path := trimImportPathQuotes(postmanPathArgument(input))
+			if path == "" {
+				return m.info("usage: import postman <path>")
+			}
+			return m.importPostmanPath(path)
+		default:
+			return m.info("usage: import curl | import postman <path>")
 		}
-		return m.openCurlImportCommand()
 	}
 	return m.info("unknown command: " + cmd)
+}
+
+// postmanPathArgument returns the untouched remainder after the first two
+// command words. Unlike strings.Fields followed by Join, this preserves
+// repeated spaces in a quoted (or literal) filename.
+func postmanPathArgument(input string) string {
+	rest := strings.TrimSpace(input)
+	for range 2 {
+		index := strings.IndexFunc(rest, unicode.IsSpace)
+		if index < 0 {
+			return ""
+		}
+		rest = strings.TrimSpace(rest[index:])
+	}
+	return rest
+}
+
+// trimImportPathQuotes removes the optional pair of quotes users commonly
+// include when pasting a shell path into the command palette. The command
+// parser intentionally joins all remaining fields first, so paths containing
+// spaces remain intact (for example: import postman '/tmp/my export.json').
+func trimImportPathQuotes(path string) string {
+	if len(path) < 2 {
+		return path
+	}
+	first, last := path[0], path[len(path)-1]
+	if (first == '\'' && last == '\'') || (first == '"' && last == '"') {
+		return path[1 : len(path)-1]
+	}
+	return path
 }
 
 func (m Model) openCurlImportCommand() tea.Cmd {

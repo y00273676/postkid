@@ -130,7 +130,7 @@ func New(a *app.App) Model {
 	p := textinput.New()
 	p.Prompt = ":"
 	p.PromptStyle = promptStyle
-	p.Placeholder = "send | import curl | env <name> | collection new | history"
+	p.Placeholder = "send | import curl | import postman <path> | env <name> | history"
 
 	envName := "none"
 	if e := a.CurrentEnvironment(); e != nil {

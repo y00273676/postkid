@@ -85,7 +85,7 @@
 | `{{variable}}` 变量 | ✅ |
 | History | ✅ |
 | curl 导出 | ✅ |
-| Postman Collection 导入 | 第二阶段 |
+| Postman Collection v2.1 导入 | ✅ 第二阶段 |
 | curl 导入 | ✅ V1.5 |
 | gRPC | 第二阶段 |
 | WebSocket | 后面 |
@@ -212,6 +212,7 @@ API 请求以 YAML 文件存储，**可以直接用 Git 管理**。这甚至可�
 :collection rename
 :collection delete
 :import curl
+:import postman <path>
 :export curl
 :history
 ```

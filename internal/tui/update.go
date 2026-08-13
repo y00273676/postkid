@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -149,6 +150,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.err = msg.Err
+		return m, nil
+
+	case PostmanImportSavedMsg:
+		m.rebuildList()
+		m.list.ResetSelected()
+		for index, item := range m.list.Items() {
+			entry, ok := item.(listItem)
+			if ok && entry.coll != nil && entry.coll.Name == msg.Collection {
+				m.list.Select(index)
+				break
+			}
+		}
+		m.selectCurrent()
+		m.err = nil
+		m.statusMsg = fmt.Sprintf("imported %s (%d requests)", msg.Collection, msg.Imported)
+		return m, nil
+
+	case PostmanImportSaveFailedMsg:
+		if msg.Err == nil {
+			m.err = fmt.Errorf("postman import failed")
+		} else {
+			m.err = msg.Err
+		}
 		return m, nil
 	}
 

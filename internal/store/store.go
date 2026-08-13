@@ -166,25 +166,40 @@ func CollectionPath(dir, name string) (string, error) {
 // 进程同时创建同名文件，也只能有一个调用成功。返回的 Collection 已经
 // 带有可直接用于 SaveCollection 的 FilePath。
 func CreateCollection(dir, name string) (model.Collection, error) {
-	path, err := CollectionPath(dir, name)
+	return CreateCollectionWithData(dir, model.Collection{
+		Name:     name,
+		Requests: []model.Request{},
+	})
+}
+
+// CreateCollectionWithData atomically creates a collection file containing c.
+//
+// The destination is installed with a no-overwrite operation: an existing
+// regular file, directory, or symlink is never replaced. The input model is
+// cloned before it is normalized and persisted, and the returned model owns
+// its maps and request slice so callers cannot accidentally mutate a cached
+// collection through a shared backing array.
+func CreateCollectionWithData(dir string, c model.Collection) (model.Collection, error) {
+	normalizedName, err := NormalizeCollectionName(c.Name)
 	if err != nil {
 		return model.Collection{}, err
 	}
-	normalized, _ := NormalizeCollectionName(name) // CollectionPath 已完成校验
-	c := model.Collection{
-		Name:      normalized,
-		Requests:  []model.Request{},
-		FilePath:  path,
-		Variables: nil,
+
+	path, err := CollectionPath(dir, normalizedName)
+	if err != nil {
+		return model.Collection{}, err
 	}
-	data, err := yaml.Marshal(c)
+	created := cloneCollection(c)
+	created.Name = normalizedName
+	created.FilePath = path
+	data, err := yaml.Marshal(created)
 	if err != nil {
 		return model.Collection{}, fmt.Errorf("marshal collection: %w", err)
 	}
 	if err := atomicCreateFile(path, data, 0o600); err != nil {
 		return model.Collection{}, err
 	}
-	return c, nil
+	return cloneCollection(created), nil
 }
 
 // RenameCollection 原子地重命名 collection 文件，并同步 YAML 中的 Name。
@@ -429,6 +444,37 @@ func loadYAML[T any](path string) (T, error) {
 		return zero, err
 	}
 	return v, nil
+}
+
+func cloneCollection(c model.Collection) model.Collection {
+	cloned := c
+	cloned.Variables = cloneStringMap(c.Variables)
+	if c.Requests != nil {
+		cloned.Requests = make([]model.Request, len(c.Requests))
+		for i, req := range c.Requests {
+			cloned.Requests[i] = cloneRequest(req)
+		}
+	}
+	return cloned
+}
+
+func cloneRequest(req model.Request) model.Request {
+	cloned := req
+	cloned.Headers = cloneStringMap(req.Headers)
+	cloned.Params = cloneStringMap(req.Params)
+	cloned.Variables = cloneStringMap(req.Variables)
+	return cloned
+}
+
+func cloneStringMap(values map[string]string) map[string]string {
+	if values == nil {
+		return nil
+	}
+	cloned := make(map[string]string, len(values))
+	for key, value := range values {
+		cloned[key] = value
+	}
+	return cloned
 }
 
 // saveYAML 用「写临时文件 + rename」实现原子写，避免中途崩溃损坏原文件。

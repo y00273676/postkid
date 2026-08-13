@@ -14,6 +14,7 @@ A terminal-native API client built with Go and Bubble Tea — Postman for your t
 - Inspect status, latency, size, headers, and syntax-highlighted JSON responses
 - Browse request history and reload previous requests
 - Import browser "Copy as cURL" commands into a collection
+- Import Postman Collection v2.1 JSON files
 - Export requests as cURL commands
 - Navigate entirely from the keyboard
 
@@ -135,6 +136,7 @@ collection new   Create a collection
 collection rename Rename a collection
 collection delete Delete a collection with confirmation
 import curl      Paste, preview, and save a cURL command
+import postman <path> Import a Postman Collection v2.1 JSON file
 export curl      Copy the current request as a cURL command
 history          Browse request history
 new              Create a request
@@ -143,6 +145,12 @@ new              Create a request
 `import curl` opens a multiline paste form. Press `Ctrl+S` to parse, review the
 request, choose a collection and request name, then press `Ctrl+S` again to
 save. Importing never executes the command or reads `@file` arguments.
+
+`import postman <path>` recursively imports requests, collection variables,
+query parameters, headers, supported bodies, and Basic/Bearer authentication.
+Folders are retained in flattened request names. Unsupported methods, auth/body
+modes, and file form-data parts are rejected explicitly; an existing collection
+is never overwritten.
 
 ## Development
 

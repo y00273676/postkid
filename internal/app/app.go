@@ -224,6 +224,37 @@ func normalizeRequest(req model.Request) (model.Request, error) {
 	return req, nil
 }
 
+func cloneCollection(c model.Collection) model.Collection {
+	cloned := c
+	cloned.Variables = cloneStringMap(c.Variables)
+	if c.Requests != nil {
+		cloned.Requests = make([]model.Request, len(c.Requests))
+		for i, req := range c.Requests {
+			cloned.Requests[i] = cloneRequest(req)
+		}
+	}
+	return cloned
+}
+
+func cloneRequest(req model.Request) model.Request {
+	cloned := req
+	cloned.Headers = cloneStringMap(req.Headers)
+	cloned.Params = cloneStringMap(req.Params)
+	cloned.Variables = cloneStringMap(req.Variables)
+	return cloned
+}
+
+func cloneStringMap(values map[string]string) map[string]string {
+	if values == nil {
+		return nil
+	}
+	cloned := make(map[string]string, len(values))
+	for key, value := range values {
+		cloned[key] = value
+	}
+	return cloned
+}
+
 func validateHTTPURL(rawURL string) error {
 	u, err := url.ParseRequestURI(rawURL)
 	if err != nil {
@@ -336,6 +367,59 @@ func (a *App) CreateCollection(name string) (*model.Collection, error) {
 func (a *App) AddCollection(name string) error {
 	_, err := a.CreateCollection(name)
 	return err
+}
+
+// ImportCollection validates, atomically persists, and caches a complete
+// collection. The caller's collection is never mutated and none of its maps
+// or slices are shared with the returned value or the application cache.
+// Cache mutation happens only after the store has installed the destination
+// file successfully.
+func (a *App) ImportCollection(collection model.Collection) (*model.Collection, error) {
+	if a == nil || a.cfg == nil {
+		return nil, fmt.Errorf("app and config are required")
+	}
+
+	normalizedName, err := store.NormalizeCollectionName(collection.Name)
+	if err != nil {
+		return nil, err
+	}
+
+	normalized := model.Collection{
+		Name:      normalizedName,
+		Variables: cloneStringMap(collection.Variables),
+	}
+	normalized.Requests = make([]model.Request, len(collection.Requests))
+	seenRequests := make(map[string]struct{}, len(collection.Requests))
+	for i, request := range collection.Requests {
+		normalizedRequest, err := normalizeRequest(request)
+		if err != nil {
+			return nil, fmt.Errorf("request %d: %w", i+1, err)
+		}
+		if _, exists := seenRequests[normalizedRequest.Name]; exists {
+			return nil, fmt.Errorf("duplicate request name %q", normalizedRequest.Name)
+		}
+		seenRequests[normalizedRequest.Name] = struct{}{}
+		normalized.Requests[i] = cloneRequest(normalizedRequest)
+	}
+
+	for _, existing := range a.collections {
+		existingName, normalizeErr := store.NormalizeCollectionName(existing.Name)
+		if normalizeErr == nil && existingName == normalizedName {
+			return nil, fmt.Errorf("collection %q already exists: %w", normalizedName, store.ErrCollectionExists)
+		}
+	}
+
+	persisted, err := store.CreateCollectionWithData(a.cfg.CollectionsDir(), normalized)
+	if err != nil {
+		return nil, err
+	}
+	// Keep the cache and returned pointer detached from each other. This is
+	// especially important for imported request maps, which are commonly
+	// edited immediately by a TUI form after import.
+	cached := cloneCollection(persisted)
+	a.collections = append(a.collections, cached)
+	result := cloneCollection(cached)
+	return &result, nil
 }
 
 // RenameCollection changes both a collection's YAML Name and its filename.

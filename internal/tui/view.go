@@ -236,6 +236,7 @@ func (m Model) helpView() string {
 			{"collection rename/delete", "管理 Collection"},
 			{"env new/rename/delete", "管理 Environment"},
 			{"import curl", "导入 cURL"},
+			{"import postman <path>", "导入 Postman Collection 文件"},
 			{"?", "帮助开关"},
 			{"q", "退出"},
 		}},

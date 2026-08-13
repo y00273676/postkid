@@ -591,3 +591,153 @@ func TestCollectionRefreshIsTransactionalOnLoadFailure(t *testing.T) {
 		t.Fatalf("cache changed after failed refresh: %#v", a.Collections())
 	}
 }
+
+func TestImportCollectionNormalizesPersistsAndDetaches(t *testing.T) {
+	cfg := setupDataDir(t)
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := len(a.Collections())
+	source := model.Collection{
+		Name:      " imported.yaml ",
+		Variables: map[string]string{"base_url": "https://example.test"},
+		Requests: []model.Request{{
+			Name:         " health ",
+			Method:       " post ",
+			URL:          " https://example.test/health ",
+			Headers:      map[string]string{"Accept": "application/json"},
+			Params:       map[string]string{"verbose": "true"},
+			Variables:    map[string]string{"scope": "all"},
+			AuthType:     " BASIC ",
+			AuthUsername: "alice",
+			AuthPassword: "secret",
+		}},
+	}
+	created, err := a.ImportCollection(source)
+	if err != nil {
+		t.Fatalf("ImportCollection: %v", err)
+	}
+	if created.Name != "imported" || created.FilePath != filepath.Join(cfg.CollectionsDir(), "imported.yaml") {
+		t.Fatalf("created collection = %#v", created)
+	}
+	if len(a.Collections()) != before+1 || len(created.Requests) != 1 {
+		t.Fatalf("cache/return count = %d/%d", len(a.Collections()), len(created.Requests))
+	}
+	req := created.Requests[0]
+	if req.Name != "health" || req.Method != "POST" || req.URL != "https://example.test/health" || req.AuthType != model.AuthBasic {
+		t.Fatalf("normalized request = %#v", req)
+	}
+
+	// Mutating either the source or the detached return value must not mutate
+	// the application cache (or the persisted model on disk).
+	source.Variables["base_url"] = "https://changed.example"
+	source.Requests[0].Headers["Accept"] = "text/plain"
+	created.Variables["base_url"] = "https://returned.example"
+	created.Requests[0].Params["verbose"] = "false"
+	created.Requests = append(created.Requests, model.Request{Name: "local-only"})
+	var cached model.Collection
+	for _, candidate := range a.Collections() {
+		if candidate.Name == "imported" {
+			cached = candidate
+			break
+		}
+	}
+	if cached.Name == "" || len(cached.Requests) != 1 || cached.Variables["base_url"] != "https://example.test" ||
+		cached.Requests[0].Headers["Accept"] != "application/json" || cached.Requests[0].Params["verbose"] != "true" {
+		t.Fatalf("cache shares imported model state: %#v", cached)
+	}
+	loaded, err := store.LoadCollections(cfg.CollectionsDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var persisted model.Collection
+	for _, candidate := range loaded {
+		if candidate.Name == "imported" {
+			persisted = candidate
+			break
+		}
+	}
+	if persisted.Name == "" || len(persisted.Requests) != 1 || persisted.Requests[0].Method != "POST" {
+		t.Fatalf("persisted imported collection = %#v", persisted)
+	}
+}
+
+func TestImportCollectionRejectsCollisionsAndInvalidRequests(t *testing.T) {
+	cfg := setupDataDir(t)
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := len(a.Collections())
+	if _, err := a.ImportCollection(model.Collection{Name: " order.yaml "}); !errors.Is(err, store.ErrCollectionExists) {
+		t.Fatalf("collection collision error = %v, want ErrCollectionExists", err)
+	}
+	if len(a.Collections()) != before {
+		t.Fatalf("cache changed after collection collision: %d vs %d", len(a.Collections()), before)
+	}
+
+	invalid := model.Collection{
+		Name: "invalid-import",
+		Requests: []model.Request{{
+			Name:   "broken",
+			Method: "GET",
+			URL:    "/relative",
+		}},
+	}
+	if _, err := a.ImportCollection(invalid); err == nil || !strings.Contains(err.Error(), "invalid request URL") {
+		t.Fatalf("invalid request error = %v", err)
+	}
+	if len(a.Collections()) != before {
+		t.Fatalf("cache changed after invalid request: %d vs %d", len(a.Collections()), before)
+	}
+	if _, err := os.Stat(filepath.Join(cfg.CollectionsDir(), "invalid-import.yaml")); !os.IsNotExist(err) {
+		t.Fatalf("invalid import left a file: %v", err)
+	}
+
+	duplicate := model.Collection{
+		Name: "duplicate-import",
+		Requests: []model.Request{
+			{Name: "same", Method: "GET", URL: "https://example.test/one"},
+			{Name: " same ", Method: "POST", URL: "https://example.test/two"},
+		},
+	}
+	if _, err := a.ImportCollection(duplicate); err == nil || !strings.Contains(err.Error(), "duplicate request name") {
+		t.Fatalf("duplicate request error = %v", err)
+	}
+	if len(a.Collections()) != before {
+		t.Fatalf("cache changed after duplicate request: %d vs %d", len(a.Collections()), before)
+	}
+}
+
+func TestImportCollectionKeepsCacheWhenPersistenceFails(t *testing.T) {
+	cfg := setupDataDir(t)
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := append([]model.Collection(nil), a.Collections()...)
+	// Keep the App initialized, but point its configured store at a directory
+	// that has not been created. The atomic creator must fail without changing
+	// the in-memory cache.
+	cfg.Dir = filepath.Join(t.TempDir(), "missing-data-dir")
+	_, err = a.ImportCollection(model.Collection{
+		Name: "persist-failure",
+		Requests: []model.Request{{
+			Name:   "request",
+			Method: "GET",
+			URL:    "https://example.test",
+		}},
+	})
+	if err == nil {
+		t.Fatal("ImportCollection unexpectedly succeeded with unavailable store directory")
+	}
+	if len(a.Collections()) != len(before) {
+		t.Fatalf("cache length changed after persistence failure: %d vs %d", len(a.Collections()), len(before))
+	}
+	for i := range before {
+		if a.Collections()[i].Name != before[i].Name || a.Collections()[i].FilePath != before[i].FilePath {
+			t.Fatalf("cache changed after persistence failure: before=%#v after=%#v", before, a.Collections())
+		}
+	}
+}

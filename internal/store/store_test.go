@@ -164,6 +164,96 @@ func TestCollectionCRUDRejectsUnsafeNamesAndPaths(t *testing.T) {
 	}
 }
 
+func TestCreateCollectionWithDataIsAtomicAndDoesNotOverwrite(t *testing.T) {
+	dir := t.TempDir()
+	input := model.Collection{
+		Name:      " imported.yaml ",
+		Variables: map[string]string{"base_url": "https://example.test"},
+		Requests: []model.Request{{
+			Name:      " list ",
+			Method:    "GET",
+			URL:       "https://example.test/list",
+			Headers:   map[string]string{"Accept": "application/json"},
+			Params:    map[string]string{"page": "1"},
+			Variables: map[string]string{"scope": "all"},
+		}},
+		FilePath: filepath.Join(t.TempDir(), "caller-owned.yaml"),
+	}
+	created, err := CreateCollectionWithData(dir, input)
+	if err != nil {
+		t.Fatalf("CreateCollectionWithData: %v", err)
+	}
+	wantPath := filepath.Join(dir, "imported.yaml")
+	if created.Name != "imported" || created.FilePath != wantPath {
+		t.Fatalf("created collection = %#v", created)
+	}
+	if created.Requests[0].Name != " list " {
+		t.Fatalf("store unexpectedly normalized request name: %#v", created.Requests[0])
+	}
+
+	// The returned model and the caller's input are independent from each
+	// other. (The persisted bytes are already detached by YAML marshaling.)
+	created.Variables["base_url"] = "changed"
+	created.Requests[0].Headers["Accept"] = "text/plain"
+	input.Variables["base_url"] = "caller-changed"
+	input.Requests[0].Params["page"] = "2"
+	loaded, err := LoadCollections(dir)
+	if err != nil {
+		t.Fatalf("LoadCollections: %v", err)
+	}
+	if len(loaded) != 1 || loaded[0].Variables["base_url"] != "https://example.test" ||
+		loaded[0].Requests[0].Headers["Accept"] != "application/json" ||
+		loaded[0].Requests[0].Params["page"] != "1" {
+		t.Fatalf("persisted collection changed unexpectedly: %#v", loaded)
+	}
+
+	original, err := os.ReadFile(wantPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := CreateCollectionWithData(dir, model.Collection{Name: "imported", Requests: []model.Request{}}); !errors.Is(err, ErrCollectionExists) {
+		t.Fatalf("duplicate error = %v, want ErrCollectionExists", err)
+	}
+	got, err := os.ReadFile(wantPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(original) {
+		t.Fatalf("duplicate import replaced existing file:\n got %s\nwant %s", got, original)
+	}
+}
+
+func TestCreateCollectionWithDataRefusesSymlink(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(t.TempDir(), "outside.yaml")
+	if err := os.WriteFile(target, []byte("keep: me\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "linked.yaml")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if _, err := CreateCollectionWithData(dir, model.Collection{Name: "linked"}); !errors.Is(err, ErrCollectionExists) {
+		t.Fatalf("symlink error = %v, want ErrCollectionExists", err)
+	}
+	data, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "keep: me\n" {
+		t.Fatalf("symlink target changed: %q", data)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".postkid-") {
+			t.Errorf("temporary file left after failed create: %s", entry.Name())
+		}
+	}
+}
+
 func TestRenameCollectionRejectsDestinationAndKeepsSource(t *testing.T) {
 	dir := t.TempDir()
 	first, err := CreateCollection(dir, "first")
