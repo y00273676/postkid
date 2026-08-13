@@ -1,0 +1,5 @@
+name: sandbox
+
+variables:
+  base_url: https://sandbox.example.com
+  token: dev-token-xxx

@@ -1,0 +1,26 @@
+name: order
+
+variables:
+  order_id: "123456"
+
+requests:
+  - name: get-order
+    method: GET
+    url: "{{base_url}}/api/orders/{{order_id}}"
+    headers:
+      Authorization: "Bearer {{token}}"
+      Accept: "application/json"
+    params:
+      detail: "true"
+
+  - name: create-order
+    method: POST
+    url: "{{base_url}}/api/orders"
+    headers:
+      Content-Type: "application/json"
+      Authorization: "Bearer {{token}}"
+    body: |
+      {
+        "sku": "A-1",
+        "quantity": 2
+      }

@@ -1,0 +1,94 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## 项目概述
+
+tpost — Terminal-native API 客户端（TUI 版 Postman）。技术栈：Go + Bubble Tea + Bubbles + Lip Gloss。
+
+## 构建与测试
+
+```bash
+go build -o tpost ./cmd/tpost
+go install ./cmd/tpost        # 安装到 $GOPATH/bin
+go test ./...                  # 运行全部测试
+go test -run TestXxx ./...     # 运行单个测试（如 TestResolveRequest）
+```
+
+运行（使用项目内置示例数据，指向 sandbox.example.com）：
+
+```bash
+go run ./cmd/tpost -dir testdata
+```
+
+## 架构
+
+```
+TUI (bubbletea)
+  │
+  ▼
+App (application 层门面，不 import bubbletea，可被 CLI/CI 复用)
+  │
+  ├── Store      → YAML 持久化（collections/*.yaml, environments/*.yaml）
+  ├── HTTP Engine → net/http 执行请求
+  └── Environment → 变量合并与 {{variable}} 替换
+```
+
+### 分层说明
+
+- **`cmd/tpost/main.go`** — 入口，解析 flag，创建 App，启动 Bubble Tea 程序
+- **`internal/model/`** — 核心数据结构：Request, Collection, Environment, Response, ResolvedRequest
+- **`internal/app/`** — Application 层门面：加载数据、变量替换、请求发送、保存回写
+- **`internal/tui/`** — Bubble Tea TUI 实现：三面板布局（List | Request | Response），命令面板，Tab 切换
+- **`internal/httpengine/`** — HTTP 客户端封装，30s 超时，JSON pretty-print，10MB body 上限
+- **`internal/env/`** — `{{variable}}` 合并与替换，优先级：request > collection > environment
+- **`internal/store/`** — YAML 加载/原子写回（临时文件 + rename）
+- **`internal/config/`** — `~/.tpost/` 数据目录初始化与 config.yaml 管理
+- **`internal/editor/`** — 用 `$EDITOR` 暂停 TUI 编辑请求 body
+
+### 数据目录结构
+
+```
+~/.tpost/
+├── config.yaml              # current_env 等配置
+├── collections/*.yaml       # 请求集合
+├── environments/*.yaml      # 环境变量
+└── history/                 # 预留
+```
+
+### 变量优先级
+
+1. Request 级变量（`request.variables`）
+2. Collection 级变量（`collection.variables`）
+3. Environment 级变量（`environment.variables`）
+同名变量按优先级覆盖。
+
+## 已实现功能（V1）
+
+| 功能 | 状态 |
+|---|---|
+| GET/POST/PUT/PATCH/DELETE | ✅ model 支持，测试覆盖 GET/POST |
+| URL 编辑 | ✅ 请求面板展示 resolved URL |
+| Query Params | ✅ Params tab 展示 |
+| Headers | ✅ Headers tab 展示 |
+| JSON/Text Body | ✅ Body tab 展示 + $EDITOR 编辑 |
+| Auth (Basic/Bearer) | ❌ 仅通过 Headers 手动配置，无 Auth tab |
+| Response Body | ✅ JSON pretty-print |
+| Status/Latency/Size | ✅ 状态栏展示 |
+| Collections | ✅ 加载、选择、保存回写 |
+| Environment | ✅ 切换（`:env`）、持久化 current_env |
+| `{{variable}}` 变量 | ✅ 三层优先级合并 |
+| History | ❌ |
+| curl 导出 | ❌ |
+| curl 导入 | ❌ (V1.5) |
+| New Request / Delete | ❌ (n/d 键未实现) |
+| Search | ❌ (/) |
+| Auth tab | ❌ 设计中有 Params/Headers/Body/Auth 四 tab，当前只有前三 |
+
+## 关键设计决策
+
+- Body 编辑走外部 `$EDITOR`，TUI 内不做完整编辑器
+- 存储用本地 YAML 文件（Git 友好），不用数据库
+- App 层不 import bubbletea，未来可被 CLI/CI 复用
+- 原子写用临时文件 + rename 防止崩溃损坏
+- 请求发送是同步的，TUI 中用 `tea.Batch` 异步执行

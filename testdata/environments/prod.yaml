@@ -1,0 +1,5 @@
+name: prod
+
+variables:
+  base_url: https://api.example.com
+  token: prod-token-yyy
