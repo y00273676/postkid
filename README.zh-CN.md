@@ -1,4 +1,4 @@
-# tpost
+# postkid
 
 简体中文 | [English](README.md)
 
@@ -23,27 +23,34 @@
 ```bash
 git clone https://github.com/y00273676/postkid.git
 cd postkid
-go build -o tpost ./cmd/tpost
+go build -o postkid ./cmd/postkid
 ```
 
-也可以将 `tpost` 安装到 Go 的二进制目录：
+也可以将 `postkid` 安装到 Go 的二进制目录：
 
 ```bash
-go install ./cmd/tpost
+go install ./cmd/postkid
 ```
 
 ## 快速开始
 
 ```bash
-./tpost                 # 使用 ~/.tpost 作为数据目录
-./tpost -dir testdata   # 使用项目自带的示例数据启动
-./tpost -version        # 输出版本号
+./postkid                 # 使用 ~/.postkid 作为数据目录
+./postkid -dir testdata   # 使用项目自带的示例数据启动
+./postkid run order/get-order               # 执行一个已保存请求
+./postkid run -env sandbox order            # 执行整个集合
+./postkid run ./collections/regression.yaml # 在 CI 中执行集合文件
+./postkid -version        # 输出版本号
 ```
 
-首次启动时，tpost 会在 `~/.tpost` 下创建以下目录结构：
+`run` 是非交互模式：它会输出解析后的 URL、状态、耗时、大小和响应正文，
+同时记录 History；网络错误或 HTTP 4xx/5xx 响应会返回非零退出码。可用
+`-dir <路径>` 指定数据目录，用 `-env <名称>` 覆盖 `config.yaml` 中的当前环境。
+
+首次启动时，postkid 会在 `~/.postkid` 下创建以下目录结构：
 
 ```text
-~/.tpost/
+~/.postkid/
 ├── config.yaml
 ├── collections/
 ├── environments/
@@ -52,7 +59,7 @@ go install ./cmd/tpost
 
 ## 配置
 
-在 `~/.tpost/collections/order.yaml` 中创建 Collection：
+在 `~/.postkid/collections/order.yaml` 中创建 Collection：
 
 ```yaml
 name: order
@@ -70,7 +77,7 @@ requests:
     auth_token: "{{token}}"
 ```
 
-在 `~/.tpost/environments/sandbox.yaml` 中创建 Environment：
+在 `~/.postkid/environments/sandbox.yaml` 中创建 Environment：
 
 ```yaml
 name: sandbox
@@ -79,13 +86,13 @@ variables:
   token: dev-token-xxx
 ```
 
-在 `~/.tpost/config.yaml` 中选择当前环境：
+在 `~/.postkid/config.yaml` 中选择当前环境：
 
 ```yaml
 current_env: sandbox
 ```
 
-同名变量存在于多个作用域时，tpost 按以下优先级取值：
+同名变量存在于多个作用域时，postkid 按以下优先级取值：
 
 ```text
 request > collection > environment

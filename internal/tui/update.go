@@ -2,6 +2,7 @@ package tui
 
 import (
 	"strconv"
+	"strings"
 
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/textinput"
@@ -27,12 +28,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.app.RecordHistory(msg.Resolved, r)
 		if r.Err != nil {
 			m.err = r.Err
+			// Do not leave a previous successful response visible after a
+			// failed request. The stale body is especially confusing when the
+			// status line has already changed to an error.
+			m.resp = nil
+			m.viewport.SetContent("")
 			m.statusMsg = ""
 			return m, nil
 		}
 		m.resp = &r
 		m.err = nil
-		m.viewport.SetContent(HighlightJSON(r.Body))
+		m.setResponseViewportContent(true)
 		m.viewport.GotoTop()
 		m.statusMsg = formatStatusLine(r)
 		return m, nil
@@ -45,7 +51,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.curReq != nil {
 			m.curReq.Body = msg.Body
 			m.dirty = true
-			m.statusMsg = "body edited — Ctrl+S to save"
+			if m.curColl == nil {
+				m.statusMsg = "body edited — s to resend; history snapshot cannot be saved directly"
+			} else {
+				m.statusMsg = "body edited — Ctrl+S to save"
+			}
 		}
 		return m, nil
 
@@ -83,12 +93,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case SearchModeMsg:
+		m.searching = msg.Active
 		if msg.Active {
 			m.searchInput = textinput.New()
 			m.searchInput.Prompt = "/"
 			m.searchInput.Focus()
 		} else {
 			m.searchInput = textinput.Model{}
+			m.list.SetItems(m.allItems())
+			m.list.ResetSelected()
+			m.selectCurrent()
 		}
 		return m, nil
 	}
@@ -96,6 +110,35 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// 命令面板模式下，所有键先交给 palette
 	if m.focus == FocusCommand {
 		return m.updatePalette(msg)
+	}
+
+	// 搜索和历史都是模态交互。它们必须在全局快捷键之前处理，
+	// 否则搜索文本里的 q/s 或历史浏览里的 q 会被误认为退出/发送。
+	if m.searching {
+		kmsg, ok := msg.(tea.KeyMsg)
+		if !ok {
+			return m, nil
+		}
+		return m.updateSearch(kmsg)
+	}
+	if m.showHistory {
+		kmsg, ok := msg.(tea.KeyMsg)
+		if !ok {
+			return m, nil
+		}
+		return m.updateHistory(kmsg)
+	}
+
+	// 帮助页也是一个轻量模态层；q/Esc 关闭它，避免 q 直接退出程序。
+	if m.showHelp {
+		kmsg, ok := msg.(tea.KeyMsg)
+		if !ok {
+			return m, nil
+		}
+		if key.Matches(kmsg, keys.Help) || key.Matches(kmsg, keys.Quit) || key.Matches(kmsg, keys.Back) {
+			m.showHelp = false
+		}
+		return m, nil
 	}
 
 	// 发送中：spinner tick 驱动动画（ResponseMsg 已在前面的 switch 处理）
@@ -114,29 +157,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// 全局键
 	switch {
 	case key.Matches(kmsg, keys.Quit):
-		return m, tea.Quit
+		if m.focus == FocusList {
+			return m, tea.Quit
+		}
+		m.goBack()
+		return m, nil
+	case key.Matches(kmsg, keys.Back):
+		m.goBack()
+		return m, nil
 	case key.Matches(kmsg, keys.Help):
 		m.showHelp = !m.showHelp
 		return m, nil
 	case key.Matches(kmsg, keys.Command):
-		m.focus = FocusCommand
-		m.palette.Reset()
-		m.palette.Focus()
+		m.openPalette()
 		return m, nil
 	case key.Matches(kmsg, keys.Send):
 		return m, m.sendCurrent()
 	case key.Matches(kmsg, keys.Save):
 		return m, m.saveCurrent()
-	}
-
-	// 搜索模式：Esc 退出，其余键交给搜索输入框
-	if m.searching {
-		return m.updateSearch(kmsg)
-	}
-
-	// 历史浏览模式（优先于焦点切换和面板分发）
-	if m.showHistory {
-		return m.updateHistory(kmsg)
 	}
 
 	// 焦点切换（h/l）
@@ -155,6 +193,36 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateResponse(kmsg)
 	}
 	return m, nil
+}
+
+// openPalette enters the command palette while remembering the active panel.
+// Commands are transient, so closing the palette should return to the panel
+// from which it was opened (request/response/list), not always to the list.
+func (m *Model) openPalette() {
+	m.returnFocus = m.focus
+	m.focus = FocusCommand
+	m.palette.Reset()
+	m.palette.Focus()
+}
+
+// closePalette leaves the command palette and restores the previous panel.
+func (m *Model) closePalette() {
+	if m.returnFocus == FocusCommand {
+		m.returnFocus = FocusList
+	}
+	m.focus = m.returnFocus
+	m.palette.Blur()
+}
+
+// goBack implements the design's q/Back navigation. q quits only at the root
+// list; from the request and response panels it moves one level up.
+func (m *Model) goBack() {
+	switch m.focus {
+	case FocusResponse:
+		m.focus = FocusRequest
+	case FocusRequest:
+		m.focus = FocusList
+	}
 }
 
 // moveFocus 用 h/l 在 List ↔ Request ↔ Response 间循环。
@@ -251,6 +319,17 @@ func (m Model) updateHistory(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case key.Matches(msg, enterKey):
+		if len(m.historyEntries) == 0 {
+			m.showHistory = false
+			m.statusMsg = "no history yet"
+			return m, nil
+		}
+		if m.historyIdx < 0 {
+			m.historyIdx = 0
+		}
+		if m.historyIdx >= len(m.historyEntries) {
+			m.historyIdx = len(m.historyEntries) - 1
+		}
 		entry := m.historyEntries[m.historyIdx]
 		m.showHistory = false
 		// 将历史记录加载为当前请求
@@ -266,7 +345,8 @@ func (m Model) updateHistory(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.curColl = nil // 历史记录不属于任何 collection
 		m.focus = FocusRequest
 		m.tab = TabBody
-		m.statusMsg = "loaded from history — save to collection to persist"
+		m.dirty = false
+		m.statusMsg = "loaded from history — s to resend; history snapshot cannot be saved directly"
 		return m, nil
 	case key.Matches(msg, keys.Quit), key.Matches(msg, keys.Back):
 		m.showHistory = false
@@ -298,6 +378,29 @@ func (m *Model) resize() {
 	m.list.SetSize(listW-4, contentH-4)
 	m.viewport.Width = rightW - 4
 	m.viewport.Height = respH - 3 // 边框 2 + 状态行 1
+	if m.resp != nil {
+		m.setResponseViewportContent(false)
+	}
+}
+
+// setResponseViewportContent updates the response pager after a response or a
+// resize. The engine caps response reads, but the UI still needs to make that
+// boundary explicit so a user never mistakes an incomplete body for a complete
+// one. Keeping the marker in the viewport also makes it visible after scrolling
+// to the bottom.
+func (m *Model) setResponseViewportContent(reset bool) {
+	if m.resp == nil {
+		m.viewport.SetContent("")
+		return
+	}
+	content := HighlightJSON(m.resp.Body)
+	if m.resp.Truncated {
+		content = strings.TrimRight(content, "\n") + "\n\n" + truncatedStyle.Render("… response truncated by the read limit")
+	}
+	m.viewport.SetContent(content)
+	if reset {
+		m.viewport.GotoTop()
+	}
 }
 
 // updateSearch 处理搜索模式的按键。
@@ -307,6 +410,8 @@ func (m Model) updateSearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.searching = false
 		m.searchInput = textinput.Model{}
 		m.list.SetItems(m.allItems())
+		m.list.ResetSelected()
+		m.selectCurrent()
 		m.statusMsg = ""
 		return m, nil
 	case key.Matches(msg, enterKey):
@@ -317,6 +422,8 @@ func (m Model) updateSearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		} else {
 			m.list.SetItems(m.filterItems(query))
 		}
+		m.list.ResetSelected()
+		m.selectCurrent()
 		m.statusMsg = "search: " + query
 		return m, nil
 	}
@@ -329,5 +436,7 @@ func (m Model) updateSearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	} else {
 		m.list.SetItems(m.filterItems(query))
 	}
+	m.list.ResetSelected()
+	m.selectCurrent()
 	return m, cmd
 }

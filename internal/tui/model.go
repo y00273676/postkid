@@ -1,4 +1,4 @@
-// Package tui 实现 tpost 的 Bubble Tea 界面。
+// Package tui 实现 postkid 的 Bubble Tea 界面。
 package tui
 
 import (
@@ -34,13 +34,17 @@ const (
 	TabAuth
 )
 
-// Model 是 tpost 的 root tea.Model。
+// Model 是 postkid 的 root tea.Model。
 type Model struct {
 	app *app.App
 
 	width, height int
 	focus         focus
-	showHelp      bool
+	// returnFocus remembers the panel that opened a transient command palette.
+	// Keeping it separate from focus makes Esc/q behave like a real back action
+	// instead of unexpectedly jumping to the collection list.
+	returnFocus focus
+	showHelp    bool
 
 	list     list.Model
 	viewport viewport.Model
@@ -112,6 +116,7 @@ func New(a *app.App) Model {
 	p := textinput.New()
 	p.Prompt = ":"
 	p.PromptStyle = promptStyle
+	p.Placeholder = "send | save | env <name> | export curl | history"
 
 	envName := "none"
 	if e := a.CurrentEnvironment(); e != nil {
@@ -119,15 +124,16 @@ func New(a *app.App) Model {
 	}
 
 	return Model{
-		app:       a,
-		focus:     FocusList,
-		list:      l,
-		viewport:  vp,
-		palette:   p,
-		spinner:   sp,
-		colls:     colls,
-		tab:       TabParams,
-		statusMsg: "env: " + envName + "  — press ? for help",
+		app:         a,
+		focus:       FocusList,
+		returnFocus: FocusList,
+		list:        l,
+		viewport:    vp,
+		palette:     p,
+		spinner:     sp,
+		colls:       colls,
+		tab:         TabParams,
+		statusMsg:   "env: " + envName + "  — press ? for help",
 	}
 }
 

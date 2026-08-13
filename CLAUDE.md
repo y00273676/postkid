@@ -4,13 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目概述
 
-tpost — Terminal-native API 客户端（TUI 版 Postman）。技术栈：Go + Bubble Tea + Bubbles + Lip Gloss。
+postkid — Terminal-native API 客户端（TUI 版 Postman）。技术栈：Go + Bubble Tea + Bubbles + Lip Gloss。
 
 ## 构建与测试
 
 ```bash
-go build -o tpost ./cmd/tpost
-go install ./cmd/tpost        # 安装到 $GOPATH/bin
+go build -o postkid ./cmd/postkid
+go install ./cmd/postkid        # 安装到 $GOPATH/bin
 go test ./...                  # 运行全部测试
 go test -run TestXxx ./...     # 运行单个测试（如 TestResolveRequest）
 ```
@@ -18,7 +18,7 @@ go test -run TestXxx ./...     # 运行单个测试（如 TestResolveRequest）
 运行（使用项目内置示例数据，指向 sandbox.example.com）：
 
 ```bash
-go run ./cmd/tpost -dir testdata
+go run ./cmd/postkid -dir testdata
 ```
 
 ## 架构
@@ -36,20 +36,20 @@ App (application 层门面，不 import bubbletea，可被 CLI/CI 复用)
 
 ### 分层说明
 
-- **`cmd/tpost/main.go`** — 入口，解析 flag，创建 App，启动 Bubble Tea 程序
+- **`cmd/postkid/main.go`** — 入口，解析 flag，创建 App，启动 Bubble Tea 程序
 - **`internal/model/`** — 核心数据结构：Request, Collection, Environment, Response, ResolvedRequest
 - **`internal/app/`** — Application 层门面：加载数据、变量替换、请求发送、保存回写
 - **`internal/tui/`** — Bubble Tea TUI 实现：三面板布局（List | Request | Response），命令面板，Tab 切换
 - **`internal/httpengine/`** — HTTP 客户端封装，30s 超时，JSON pretty-print，10MB body 上限
 - **`internal/env/`** — `{{variable}}` 合并与替换，优先级：request > collection > environment
 - **`internal/store/`** — YAML 加载/原子写回（临时文件 + rename）
-- **`internal/config/`** — `~/.tpost/` 数据目录初始化与 config.yaml 管理
+- **`internal/config/`** — `~/.postkid/` 数据目录初始化与 config.yaml 管理
 - **`internal/editor/`** — 用 `$EDITOR` 暂停 TUI 编辑请求 body
 
 ### 数据目录结构
 
 ```
-~/.tpost/
+~/.postkid/
 ├── config.yaml              # current_env 等配置
 ├── collections/*.yaml       # 请求集合
 ├── environments/*.yaml      # 环境变量

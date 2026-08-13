@@ -1,4 +1,4 @@
-# tpost
+# postkid
 
 [简体中文](README.zh-CN.md) | English
 
@@ -23,27 +23,35 @@ Requirements: Go 1.26 or later.
 ```bash
 git clone https://github.com/y00273676/postkid.git
 cd postkid
-go build -o tpost ./cmd/tpost
+go build -o postkid ./cmd/postkid
 ```
 
-To install `tpost` into your Go binary directory:
+To install `postkid` into your Go binary directory:
 
 ```bash
-go install ./cmd/tpost
+go install ./cmd/postkid
 ```
 
 ## Quick start
 
 ```bash
-./tpost                 # use ~/.tpost as the data directory
-./tpost -dir testdata   # launch with the included example data
-./tpost -version        # print the version
+./postkid                 # use ~/.postkid as the data directory
+./postkid -dir testdata   # launch with the included example data
+./postkid run order/get-order               # run one saved request
+./postkid run -env sandbox order            # run a collection
+./postkid run ./collections/regression.yaml # run a collection file in CI
+./postkid -version        # print the version
 ```
 
-On first launch, tpost creates the following structure under `~/.tpost`:
+`run` is non-interactive. It prints the resolved URL, status, latency, size,
+and response body, records history, and exits non-zero on transport errors or
+HTTP 4xx/5xx responses. Use `-dir <path>` to select a data directory and
+`-env <name>` to override `config.yaml`'s current environment.
+
+On first launch, postkid creates the following structure under `~/.postkid`:
 
 ```text
-~/.tpost/
+~/.postkid/
 ├── config.yaml
 ├── collections/
 ├── environments/
@@ -52,7 +60,7 @@ On first launch, tpost creates the following structure under `~/.tpost`:
 
 ## Configuration
 
-Create a collection in `~/.tpost/collections/order.yaml`:
+Create a collection in `~/.postkid/collections/order.yaml`:
 
 ```yaml
 name: order
@@ -70,7 +78,7 @@ requests:
     auth_token: "{{token}}"
 ```
 
-Create an environment in `~/.tpost/environments/sandbox.yaml`:
+Create an environment in `~/.postkid/environments/sandbox.yaml`:
 
 ```yaml
 name: sandbox
@@ -79,13 +87,13 @@ variables:
   token: dev-token-xxx
 ```
 
-Select the environment in `~/.tpost/config.yaml`:
+Select the environment in `~/.postkid/config.yaml`:
 
 ```yaml
 current_env: sandbox
 ```
 
-When the same variable exists in multiple scopes, tpost uses this precedence:
+When the same variable exists in multiple scopes, postkid uses this precedence:
 
 ```text
 request > collection > environment

@@ -253,3 +253,170 @@ func TestResolveRequest_AuthNone(t *testing.T) {
 		t.Errorf("Authorization header should not be set for auth_type=none")
 	}
 }
+
+func TestResolveRequest_NormalizesAndValidatesMethod(t *testing.T) {
+	cfg := setupDataDir(t)
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	coll := a.Collections()[0]
+	req := model.Request{Name: "method", Method: " post ", URL: "https://example.com"}
+	resolved, err := a.ResolveRequest(req, coll)
+	if err != nil {
+		t.Fatalf("ResolveRequest: %v", err)
+	}
+	if resolved.Method != "POST" {
+		t.Fatalf("method = %q, want POST", resolved.Method)
+	}
+
+	req.Method = "OPTIONS"
+	if _, err := a.ResolveRequest(req, coll); err == nil || !strings.Contains(err.Error(), "unsupported HTTP method") {
+		t.Fatalf("unsupported method error = %v", err)
+	}
+}
+
+func TestResolveRequest_ExplicitAuthorizationIsCaseInsensitive(t *testing.T) {
+	cfg := setupDataDir(t)
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	coll := a.Collections()[0]
+	req := model.Request{
+		Name: "auth", Method: "GET", URL: "https://example.com",
+		Headers:  map[string]string{"authorization": "Bearer explicit"},
+		AuthType: model.AuthBearer, AuthToken: "generated",
+	}
+	resolved, err := a.ResolveRequest(req, coll)
+	if err != nil {
+		t.Fatalf("ResolveRequest: %v", err)
+	}
+	if got := resolved.Headers["authorization"]; got != "Bearer explicit" {
+		t.Fatalf("authorization = %q", got)
+	}
+	if _, exists := resolved.Headers["Authorization"]; exists {
+		t.Fatal("generated Authorization should not override differently-cased explicit header")
+	}
+}
+
+func TestResolveRequest_RejectsUnknownAuthAndDeduplicatesMissingVariables(t *testing.T) {
+	cfg := setupDataDir(t)
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	coll := a.Collections()[0]
+	req := model.Request{Name: "auth", Method: "GET", URL: "https://example.com", AuthType: "digest"}
+	if _, err := a.ResolveRequest(req, coll); err == nil || !strings.Contains(err.Error(), "unsupported auth type") {
+		t.Fatalf("unknown auth error = %v", err)
+	}
+
+	req = model.Request{
+		Name: "missing", Method: "GET", URL: "{{same}}/{{same}}",
+		Headers: map[string]string{"X-Test": "{{other}}/{{same}}"},
+	}
+	_, err = a.ResolveRequest(req, coll)
+	if err == nil {
+		t.Fatal("expected missing variable error")
+	}
+	if got, want := err.Error(), "undefined variables: other, same"; got != want {
+		t.Fatalf("error = %q, want %q", got, want)
+	}
+}
+
+func TestRequestMutationsRejectMissingAndDuplicateNames(t *testing.T) {
+	cfg := setupDataDir(t)
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	coll := &a.collections[0]
+	originalLen := len(coll.Requests)
+
+	missing := model.Request{Name: "does-not-exist", Method: "GET", URL: "https://example.com"}
+	if err := a.SaveRequest(coll, &missing); err == nil {
+		t.Fatal("SaveRequest should reject a request absent from the collection")
+	}
+	if err := a.DeleteRequest(coll, missing.Name); err == nil {
+		t.Fatal("DeleteRequest should reject a request absent from the collection")
+	}
+	duplicate := coll.Requests[0]
+	if err := a.AddRequest(coll, &duplicate); err == nil {
+		t.Fatal("AddRequest should reject a duplicate name")
+	}
+	if len(coll.Requests) != originalLen {
+		t.Fatalf("failed mutations changed request count: got %d, want %d", len(coll.Requests), originalLen)
+	}
+}
+
+func TestRequestMutationsRollbackWhenPersistenceFails(t *testing.T) {
+	cfg := setupDataDir(t)
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	coll := &a.collections[0]
+	originalPath := coll.FilePath
+	coll.FilePath = filepath.Join(t.TempDir(), "missing", "collection.yaml")
+	t.Cleanup(func() { coll.FilePath = originalPath })
+
+	original := coll.Requests[0]
+	changed := original
+	changed.URL = "https://changed.example.com"
+	if err := a.SaveRequest(coll, &changed); err == nil {
+		t.Fatal("SaveRequest should fail for an invalid destination")
+	}
+	if coll.Requests[0].URL != original.URL {
+		t.Fatal("SaveRequest did not roll back its in-memory mutation")
+	}
+
+	originalLen := len(coll.Requests)
+	added := model.Request{Name: "added", Method: "GET", URL: "https://example.com"}
+	if err := a.AddRequest(coll, &added); err == nil {
+		t.Fatal("AddRequest should fail for an invalid destination")
+	}
+	if len(coll.Requests) != originalLen {
+		t.Fatal("AddRequest did not roll back its in-memory mutation")
+	}
+
+	if err := a.DeleteRequest(coll, original.Name); err == nil {
+		t.Fatal("DeleteRequest should fail for an invalid destination")
+	}
+	if len(coll.Requests) != originalLen || coll.Requests[0].Name != original.Name {
+		t.Fatal("DeleteRequest did not roll back its in-memory mutation")
+	}
+}
+
+func TestRequestMutationsSynchronizeDetachedCollection(t *testing.T) {
+	cfg := setupDataDir(t)
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	detached := a.Collections()[0]
+	originalLen := len(detached.Requests)
+	added := model.Request{Name: "added", Method: "GET", URL: "https://example.com"}
+
+	if err := a.AddRequest(&detached, &added); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(a.Collections()[0].Requests); got != originalLen+1 {
+		t.Fatalf("cached request count after add = %d, want %d", got, originalLen+1)
+	}
+
+	added.URL = "https://changed.example.com"
+	if err := a.SaveRequest(&detached, &added); err != nil {
+		t.Fatal(err)
+	}
+	if got := a.Collections()[0].Requests[originalLen].URL; got != added.URL {
+		t.Fatalf("cached request URL after save = %q, want %q", got, added.URL)
+	}
+
+	if err := a.DeleteRequest(&detached, added.Name); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(a.Collections()[0].Requests); got != originalLen {
+		t.Fatalf("cached request count after delete = %d, want %d", got, originalLen)
+	}
+}

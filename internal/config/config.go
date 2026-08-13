@@ -1,4 +1,4 @@
-// Package config 解析 ~/.tpost 数据目录与 config.yaml。
+// Package config 解析 ~/.postkid 数据目录与 config.yaml。
 package config
 
 import (
@@ -9,16 +9,16 @@ import (
 )
 
 // DefaultDirName 是用户主目录下的数据目录名。
-const DefaultDirName = ".tpost"
+const DefaultDirName = ".postkid"
 
-// Config 描述 tpost 运行所需的配置。
+// Config 描述 postkid 运行所需的配置。
 type Config struct {
-	Dir         string `yaml:"-"`
-	CurrentEnv  string `yaml:"current_env"`
-	configPath  string `yaml:"-"`
+	Dir        string `yaml:"-"`
+	CurrentEnv string `yaml:"current_env"`
+	configPath string `yaml:"-"`
 }
 
-// Load 解析数据目录。dir 为空时默认 ~/.tpost，不存在则创建。
+// Load 解析数据目录。dir 为空时默认 ~/.postkid，不存在则创建。
 func Load(dir string) (*Config, error) {
 	if dir == "" {
 		home, err := os.UserHomeDir()
@@ -40,7 +40,7 @@ func Load(dir string) (*Config, error) {
 // CollectionsDir / EnvironmentsDir / HistoryDir 返回各子目录绝对路径。
 func (c *Config) CollectionsDir() string  { return filepath.Join(c.Dir, "collections") }
 func (c *Config) EnvironmentsDir() string { return filepath.Join(c.Dir, "environments") }
-func (c *Config) HistoryDir() string     { return filepath.Join(c.Dir, "history") }
+func (c *Config) HistoryDir() string      { return filepath.Join(c.Dir, "history") }
 
 // Save 持久化 config.yaml（current_env 等）。
 func (c *Config) Save() error {

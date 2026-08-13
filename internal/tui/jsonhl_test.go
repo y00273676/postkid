@@ -16,7 +16,7 @@ func TestMain(m *testing.M) {
 }
 
 func TestHighlightJSONColorsKeysAndValues(t *testing.T) {
-	in := `{"name": "tpost", "count": 3, "ok": true, "data": null}`
+	in := `{"name": "postkid", "count": 3, "ok": true, "data": null}`
 	out := HighlightJSON(in)
 
 	// key 应带 AccentAlt 色码，字符串值带绿色码
@@ -24,7 +24,7 @@ func TestHighlightJSONColorsKeysAndValues(t *testing.T) {
 		t.Fatalf("expected ANSI codes in output, got %q", out)
 	}
 	// 内容本身不能丢
-	for _, want := range []string{`"name"`, `"tpost"`, "3", "true", "null"} {
+	for _, want := range []string{`"name"`, `"postkid"`, "3", "true", "null"} {
 		if !strings.Contains(stripANSI(out), want) {
 			t.Errorf("output missing %q\n%s", want, out)
 		}

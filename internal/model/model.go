@@ -1,4 +1,4 @@
-// Package model 定义 tpost 的核心数据结构。
+// Package model 定义 postkid 的核心数据结构。
 package model
 
 import (
@@ -8,27 +8,27 @@ import (
 
 // Auth 类型常量。
 const (
-	AuthNone  = "none"
-	AuthBasic = "basic"
+	AuthNone   = "none"
+	AuthBasic  = "basic"
 	AuthBearer = "bearer"
 )
 
 // Request 表示一个 API 请求定义（collection 中的一个条目）。
 type Request struct {
-	Name        string            `yaml:"name"`
-	Method      string            `yaml:"method"`
-	URL         string            `yaml:"url"`
-	Headers     map[string]string `yaml:"headers,omitempty"`
-	Params      map[string]string `yaml:"params,omitempty"`
-	Body        string            `yaml:"body,omitempty"`
-	Variables   map[string]string `yaml:"variables,omitempty"` // request 级变量，优先级最高
-	AuthType    string            `yaml:"auth_type,omitempty"`   // "none" / "basic" / "bearer"
-	AuthUsername string           `yaml:"auth_username,omitempty"`
-	AuthPassword string           `yaml:"auth_password,omitempty"`
-	AuthToken   string            `yaml:"auth_token,omitempty"`
+	Name         string            `yaml:"name"`
+	Method       string            `yaml:"method"`
+	URL          string            `yaml:"url"`
+	Headers      map[string]string `yaml:"headers,omitempty"`
+	Params       map[string]string `yaml:"params,omitempty"`
+	Body         string            `yaml:"body,omitempty"`
+	Variables    map[string]string `yaml:"variables,omitempty"` // request 级变量，优先级最高
+	AuthType     string            `yaml:"auth_type,omitempty"` // "none" / "basic" / "bearer"
+	AuthUsername string            `yaml:"auth_username,omitempty"`
+	AuthPassword string            `yaml:"auth_password,omitempty"`
+	AuthToken    string            `yaml:"auth_token,omitempty"`
 }
 
-// Collection 是一组请求的集合，对应 ~/.tpost/collections 下的一个 YAML 文件。
+// Collection 是一组请求的集合，对应 ~/.postkid/collections 下的一个 YAML 文件。
 type Collection struct {
 	Name      string            `yaml:"name"`
 	Variables map[string]string `yaml:"variables,omitempty"` // collection 级变量
@@ -36,7 +36,7 @@ type Collection struct {
 	FilePath  string            `yaml:"-"` // 回写用，不参与序列化
 }
 
-// Environment 是一组环境变量，对应 ~/.tpost/environments 下的一个 YAML 文件。
+// Environment 是一组环境变量，对应 ~/.postkid/environments 下的一个 YAML 文件。
 type Environment struct {
 	Name      string            `yaml:"name"`
 	Variables map[string]string `yaml:"variables"`
@@ -60,6 +60,7 @@ type Response struct {
 	Headers    map[string][]string
 	Body       string // JSON 时为 pretty print 后的文本，否则原样
 	RawBody    []byte
+	Truncated  bool // 响应超过引擎读取上限时为 true
 	Err        error
 }
 
@@ -73,7 +74,7 @@ func IsValidMethod(method string) bool {
 
 // HistoryEntry 是历史记录中的一条，记录一次请求及其响应。
 type HistoryEntry struct {
-	Timestamp time.Time      `json:"timestamp"`
+	Timestamp time.Time       `json:"timestamp"`
 	Request   HistoryRequest  `json:"request"`
 	Response  HistoryResponse `json:"response"`
 }

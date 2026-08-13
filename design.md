@@ -1,4 +1,4 @@
-# TUI 版 Postman（tpost）
+# TUI 版 Postman（postkid）
 
 一个 Terminal-native 的 API 开发客户端。技术栈：Go + [Bubble Tea](https://github.com/charmbracelet/bubbletea) + Bubbles + Lip Gloss。
 
@@ -58,9 +58,9 @@
 
 | 形态 | 用法 |
 | --- | --- |
-| TUI | `tpost` |
-| CLI | `tpost run user-api/login` |
-| CI | `tpost run ./collections/regression.yaml` |
+| TUI | `postkid` |
+| CLI | `postkid run user-api/login` |
+| CI | `postkid run ./collections/regression.yaml` |
 
 ---
 
@@ -114,7 +114,7 @@ Send
 **第一版不需要 PostgreSQL、Redis、SQLite。** 直接用本地文件：
 
 ```
-~/.tpost/
+~/.postkid/
 ├── config.yaml
 ├── environments/
 │   ├── dev.yaml

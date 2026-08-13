@@ -5,8 +5,8 @@ import (
 	"strings"
 
 	"github.com/atotto/clipboard"
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/bubbles/key"
+	tea "github.com/charmbracelet/bubbletea"
 
 	"go.planetmeican.com/yangguang/postkid/internal/app"
 	"go.planetmeican.com/yangguang/postkid/internal/model"
@@ -22,13 +22,11 @@ func (m Model) updatePalette(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	switch {
 	case key.Matches(kmsg, keys.Back):
-		m.focus = FocusList
-		m.palette.Blur()
+		m.closePalette()
 		return m, nil
 	case key.Matches(kmsg, enterKey):
 		input := strings.TrimSpace(m.palette.Value())
-		m.focus = FocusList
-		m.palette.Blur()
+		m.closePalette()
 		if input == "" {
 			return m, nil
 		}
@@ -80,12 +78,10 @@ func (m Model) executeCommand(input string) tea.Cmd {
 
 // exportCurl 把当前请求转为 curl 命令并复制到剪贴板。
 func (m Model) exportCurl() tea.Cmd {
-	if m.curReq == nil || m.curColl == nil {
+	if m.curReq == nil {
 		return m.errorCmd(fmt.Errorf("no request selected"))
 	}
-	req := *m.curReq
-	coll := *m.curColl
-	resolved, err := m.app.ResolveRequest(req, coll)
+	resolved, err := m.resolveCurrent()
 	if err != nil {
 		return m.errorCmd(err)
 	}
@@ -99,17 +95,18 @@ func (m Model) exportCurl() tea.Cmd {
 
 // sendCurrent 解析并发送当前请求，异步返回 ResponseMsg。
 func (m Model) sendCurrent() tea.Cmd {
-	if m.curReq == nil || m.curColl == nil {
+	if m.curReq == nil {
 		return m.errorCmd(fmt.Errorf("no request selected"))
 	}
-	req := *m.curReq
-	coll := *m.curColl
-	resolved, err := m.app.ResolveRequest(req, coll)
+	resolved, err := m.resolveCurrent()
 	if err != nil {
 		return m.errorCmd(err)
 	}
 	app := m.app
-	return tea.Batch(
+	// Batch executes commands concurrently, so a fast response can arrive
+	// before sendingMsg and leave the spinner stuck on. Sequence guarantees the
+	// sending state is observed before the network command is started.
+	return tea.Sequence(
 		func() tea.Msg { return sendingMsg{} },
 		func() tea.Msg {
 			resp := app.Send(resolved)
@@ -120,8 +117,11 @@ func (m Model) sendCurrent() tea.Cmd {
 
 // saveCurrent 把当前请求回写到 collection 文件。
 func (m Model) saveCurrent() tea.Cmd {
-	if m.curReq == nil || m.curColl == nil {
+	if m.curReq == nil {
 		return m.errorCmd(fmt.Errorf("no request selected"))
+	}
+	if m.curColl == nil {
+		return m.errorCmd(fmt.Errorf("history requests cannot be saved directly; select a collection first"))
 	}
 	coll := m.curColl
 	req := *m.curReq
@@ -132,6 +132,23 @@ func (m Model) saveCurrent() tea.Cmd {
 		}
 		return savedMsg{}
 	}
+}
+
+// resolveCurrent resolves both collection requests and requests loaded from
+// history. A history snapshot has no collection-level variables, so an empty
+// collection is the correct context for it.
+func (m Model) resolveCurrent() (model.ResolvedRequest, error) {
+	if m.curReq == nil {
+		return model.ResolvedRequest{}, fmt.Errorf("no request selected")
+	}
+	if m.app == nil {
+		return model.ResolvedRequest{}, fmt.Errorf("application unavailable")
+	}
+	var coll model.Collection
+	if m.curColl != nil {
+		coll = *m.curColl
+	}
+	return m.app.ResolveRequest(*m.curReq, coll)
 }
 
 func (m Model) info(text string) tea.Cmd {

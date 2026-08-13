@@ -48,9 +48,14 @@ func (e *Engine) Send(r model.ResolvedRequest) model.Response {
 	}
 	defer resp.Body.Close()
 
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes))
+	// 多读一个字节用于区分“刚好达到上限”和“确实被截断”。
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes+1))
 	if err != nil {
 		return model.Response{Err: err, Latency: latency, StatusCode: resp.StatusCode}
+	}
+	truncated := len(raw) > maxBodyBytes
+	if truncated {
+		raw = raw[:maxBodyBytes]
 	}
 
 	body := string(raw)
@@ -60,15 +65,23 @@ func (e *Engine) Send(r model.ResolvedRequest) model.Response {
 			body = pretty
 		}
 	}
+	size := int64(len(raw))
+	if resp.ContentLength >= 0 {
+		size = resp.ContentLength
+	} else if truncated {
+		// 对 chunked/未知长度响应只能报告已确认的下界。
+		size = maxBodyBytes + 1
+	}
 
 	return model.Response{
 		StatusCode: resp.StatusCode,
 		Status:     resp.Status,
 		Latency:    latency,
-		Size:       int64(len(raw)),
+		Size:       size,
 		Headers:    resp.Header,
 		Body:       body,
 		RawBody:    raw,
+		Truncated:  truncated,
 	}
 }
 

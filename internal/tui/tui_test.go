@@ -10,6 +10,7 @@ import (
 
 	"go.planetmeican.com/yangguang/postkid/internal/app"
 	"go.planetmeican.com/yangguang/postkid/internal/config"
+	"go.planetmeican.com/yangguang/postkid/internal/model"
 )
 
 // copyTestData 把 testdata 拷到临时目录，返回 config。
@@ -145,5 +146,109 @@ func TestAuthTabRendersBearer(t *testing.T) {
 	}
 	if !strings.Contains(out, "{{*****}}") {
 		t.Errorf("Auth tab should show masked token {{*****}}, got:\n%s", out)
+	}
+}
+
+func TestSearchAcceptsQAsQuery(t *testing.T) {
+	cfg := copyTestData(t)
+	a, err := app.New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := New(a)
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	m = updated.(Model)
+
+	if !m.searching {
+		t.Fatal("search mode closed while entering query")
+	}
+	if got := m.searchInput.Value(); got != "q" {
+		t.Fatalf("search query = %q, want q", got)
+	}
+}
+
+func TestCommandPaletteEscRestoresPanel(t *testing.T) {
+	cfg := copyTestData(t)
+	a, err := app.New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := New(a)
+	m.focus = FocusRequest
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{':'}})
+	m = updated.(Model)
+	if m.focus != FocusCommand {
+		t.Fatalf("focus after ':' = %v, want command palette", m.focus)
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEscape})
+	m = updated.(Model)
+	if m.focus != FocusRequest {
+		t.Fatalf("focus after palette Esc = %v, want request", m.focus)
+	}
+}
+
+func TestHistorySnapshotCanBeResolvedAndResent(t *testing.T) {
+	cfg := copyTestData(t)
+	a, err := app.New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := New(a)
+	entry := model.HistoryEntry{
+		Request: model.HistoryRequest{
+			Method: "GET",
+			URL:    "https://example.com/health",
+		},
+	}
+	updated, _ := m.Update(HistoryMsg{Entries: []model.HistoryEntry{entry}})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+
+	if m.curColl != nil {
+		t.Fatal("history snapshot unexpectedly attached to a collection")
+	}
+	resolved, err := m.resolveCurrent()
+	if err != nil {
+		t.Fatalf("resolve history snapshot: %v", err)
+	}
+	if resolved.URL != entry.Request.URL {
+		t.Fatalf("resolved URL = %q, want %q", resolved.URL, entry.Request.URL)
+	}
+	if cmd := m.sendCurrent(); cmd == nil {
+		t.Fatal("history snapshot cannot be resent")
+	}
+	if cmd := m.saveCurrent(); cmd == nil {
+		t.Fatal("saveCurrent should return an error command for history snapshots")
+	}
+	if !strings.Contains(m.statusMsg, "cannot be saved directly") {
+		t.Fatalf("history status = %q, want explicit unsaved warning", m.statusMsg)
+	}
+}
+
+func TestTruncatedResponseIsMarkedInView(t *testing.T) {
+	cfg := copyTestData(t)
+	a, err := app.New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := New(a)
+	m.width, m.height = 120, 40
+	m.resize()
+	updated, _ := m.Update(ResponseMsg{
+		Resp: model.Response{
+			StatusCode: 200,
+			Status:     "200 OK",
+			Body:       `{"ok":true}`,
+			Truncated:  true,
+		},
+	})
+	m = updated.(Model)
+	if !strings.Contains(stripANSI(m.View()), "truncated") {
+		t.Fatalf("truncated marker missing from view:\n%s", m.View())
 	}
 }

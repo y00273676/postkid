@@ -33,9 +33,10 @@ var (
 	valueStyle = lipgloss.NewStyle().Foreground(colText)
 	punctStyle = lipgloss.NewStyle().Foreground(colMuted)
 
-	dirtyMark = lipgloss.NewStyle().Foreground(colRed).Bold(true)
-	errStyle  = lipgloss.NewStyle().Foreground(colRed)
-	okStyle   = lipgloss.NewStyle().Foreground(colGreen)
+	dirtyMark      = lipgloss.NewStyle().Foreground(colRed).Bold(true)
+	errStyle       = lipgloss.NewStyle().Foreground(colRed)
+	okStyle        = lipgloss.NewStyle().Foreground(colGreen)
+	truncatedStyle = lipgloss.NewStyle().Foreground(colYellow).Bold(true)
 
 	urlStyle   = lipgloss.NewStyle().Foreground(colCyan)
 	mutedStyle = lipgloss.NewStyle().Foreground(colMuted)

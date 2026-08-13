@@ -17,7 +17,7 @@ type DoneMsg struct {
 // Open 用 $EDITOR 打开临时文件编辑 body，返回 tea.Cmd。
 // bubbletea 的 tea.ExecProcess 会自动 suspend/恢复终端。退出后读回文件内容并发出 DoneMsg。
 func Open(body string) tea.Cmd {
-	tmp, err := os.CreateTemp("", "tpost-body-*.json")
+	tmp, err := os.CreateTemp("", "postkid-body-*.json")
 	if err != nil {
 		return func() tea.Msg { return DoneMsg{Err: err} }
 	}

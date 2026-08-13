@@ -56,7 +56,11 @@ func (m Model) renderRequest(width, height int) string {
 	url := m.curReq.URL
 	if m.app != nil {
 		// 展示已解析的 URL（变量替换后），便于确认实际请求地址
-		if r, err := m.app.ResolveRequest(*m.curReq, *m.curColl); err == nil {
+		var coll model.Collection
+		if m.curColl != nil {
+			coll = *m.curColl
+		}
+		if r, err := m.app.ResolveRequest(*m.curReq, coll); err == nil {
 			url = r.URL
 		}
 	}
@@ -123,7 +127,11 @@ func (m Model) renderResponse() string {
 func renderStatusHead(r model.Response) string {
 	meta := mutedStyle.Render(fmt.Sprintf("%s  %s",
 		r.Latency.Round(0).String(), humanBytes(r.Size)))
-	return statusBadge(r.Status, r.StatusCode) + "  " + meta
+	truncated := ""
+	if r.Truncated {
+		truncated = "  " + truncatedStyle.Render("truncated")
+	}
+	return statusBadge(r.Status, r.StatusCode) + "  " + meta + truncated
 }
 
 // renderBottom 渲染底部状态栏 / 命令面板 / 搜索框。
@@ -194,7 +202,7 @@ func (m Model) helpView() string {
 	}
 
 	var rows []string
-	rows = append(rows, titleStyle.Render("tpost — key bindings"))
+	rows = append(rows, titleStyle.Render("postkid — key bindings"))
 	for _, g := range groups {
 		rows = append(rows, "", keyStyle.Render(g.name))
 		for _, b := range g.binds {
@@ -216,11 +224,15 @@ func formatStatusLine(r model.Response) string {
 	if r.StatusCode >= 400 {
 		style = errStyle
 	}
-	return fmt.Sprintf("%s  %s  %s",
+	line := fmt.Sprintf("%s  %s  %s",
 		style.Render(r.Status),
 		r.Latency.Round(0).String(),
 		humanBytes(r.Size),
 	)
+	if r.Truncated {
+		line += "  " + truncatedStyle.Render("truncated")
+	}
+	return line
 }
 
 func humanBytes(n int64) string {

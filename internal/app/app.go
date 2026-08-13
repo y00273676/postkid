@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 
@@ -21,9 +22,9 @@ type App struct {
 	cfg    *config.Config
 	engine *httpengine.Engine
 
-	collections []model.Collection
+	collections  []model.Collection
 	environments []model.Environment
-	curEnv      *model.Environment
+	curEnv       *model.Environment
 }
 
 // New 加载数据目录并初始化各层。
@@ -40,9 +41,14 @@ func New(cfg *config.Config) (*App, error) {
 		return nil, fmt.Errorf("load environments: %w", err)
 	}
 
-	// 应用持久化的 current_env
+	// 应用持久化的 current_env。初始化时只恢复选择，不重复写配置文件。
 	if cfg.CurrentEnv != "" {
-		_ = a.SetEnvironment(cfg.CurrentEnv) // 找不到不算致命，留空 env
+		for i := range a.environments {
+			if a.environments[i].Name == cfg.CurrentEnv {
+				a.curEnv = &a.environments[i]
+				break
+			}
+		}
 	}
 	return a, nil
 }
@@ -60,9 +66,13 @@ func (a *App) CurrentEnvironment() *model.Environment { return a.curEnv }
 func (a *App) SetEnvironment(name string) error {
 	for i := range a.environments {
 		if a.environments[i].Name == name {
-			a.curEnv = &a.environments[i]
+			previous := a.cfg.CurrentEnv
 			a.cfg.CurrentEnv = name
-			_ = a.cfg.Save()
+			if err := a.cfg.Save(); err != nil {
+				a.cfg.CurrentEnv = previous
+				return fmt.Errorf("save current environment: %w", err)
+			}
+			a.curEnv = &a.environments[i]
 			return nil
 		}
 	}
@@ -71,6 +81,11 @@ func (a *App) SetEnvironment(name string) error {
 
 // ResolveRequest 合并变量、替换 {{var}}、把 params 拼到 URL，返回引擎可消费的请求。
 func (a *App) ResolveRequest(req model.Request, coll model.Collection) (model.ResolvedRequest, error) {
+	method := strings.ToUpper(strings.TrimSpace(req.Method))
+	if !model.IsValidMethod(method) {
+		return model.ResolvedRequest{}, fmt.Errorf("unsupported HTTP method %q", req.Method)
+	}
+
 	var envVars map[string]string
 	if a.curEnv != nil {
 		envVars = a.curEnv.Variables
@@ -96,9 +111,18 @@ func (a *App) ResolveRequest(req model.Request, coll model.Collection) (model.Re
 	}
 	finalBody := sub(req.Body)
 
-	// 从 Auth 字段生成 Authorization header（不覆盖用户显式设置的值）
-	if _, hasAuth := finalHeaders["Authorization"]; !hasAuth && req.AuthType != "" && req.AuthType != model.AuthNone {
-		switch req.AuthType {
+	// 从 Auth 字段生成 Authorization header（不覆盖用户显式设置的值）。
+	// HTTP header 名大小写不敏感，因此这里也必须大小写不敏感地检查。
+	hasAuthorization := false
+	for key := range finalHeaders {
+		if strings.EqualFold(key, "Authorization") {
+			hasAuthorization = true
+			break
+		}
+	}
+	authType := strings.ToLower(strings.TrimSpace(req.AuthType))
+	if !hasAuthorization && authType != "" && authType != model.AuthNone {
+		switch authType {
 		case model.AuthBearer:
 			subToken := sub(req.AuthToken)
 			finalHeaders["Authorization"] = "Bearer " + subToken
@@ -108,21 +132,38 @@ func (a *App) ResolveRequest(req model.Request, coll model.Collection) (model.Re
 			auth := subUser + ":" + subPass
 			encoded := base64.StdEncoding.EncodeToString([]byte(auth))
 			finalHeaders["Authorization"] = "Basic " + encoded
+		default:
+			return model.ResolvedRequest{}, fmt.Errorf("unsupported auth type %q", req.AuthType)
 		}
 	}
 
 	if len(missing) > 0 {
+		missing = uniqueSorted(missing)
 		return model.ResolvedRequest{}, fmt.Errorf("undefined variables: %s", strings.Join(missing, ", "))
 	}
 
 	finalURL = appendParams(finalURL, finalParams)
 
 	return model.ResolvedRequest{
-		Method:  req.Method,
+		Method:  method,
 		URL:     finalURL,
 		Headers: finalHeaders,
 		Body:    finalBody,
 	}, nil
+}
+
+func uniqueSorted(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	unique := make([]string, 0, len(values))
+	for _, value := range values {
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		unique = append(unique, value)
+	}
+	sort.Strings(unique)
+	return unique
 }
 
 // Send 同步发送已解析的请求。TUI 应将其包成 tea.Cmd 异步执行。
@@ -175,28 +216,62 @@ func flattenHeaders(h map[string][]string) map[string]string {
 func (a *App) SaveRequest(coll *model.Collection, req *model.Request) error {
 	for i := range coll.Requests {
 		if coll.Requests[i].Name == req.Name {
+			previous := coll.Requests[i]
 			coll.Requests[i] = *req
-			break
+			if err := store.SaveCollection(coll); err != nil {
+				coll.Requests[i] = previous
+				return err
+			}
+			a.updateCachedCollection(coll)
+			return nil
 		}
 	}
-	return store.SaveCollection(coll)
+	return fmt.Errorf("request %q not found in collection %q", req.Name, coll.Name)
 }
 
 // AddRequest 把一个新请求追加到 collection 末尾并保存。
 func (a *App) AddRequest(coll *model.Collection, req *model.Request) error {
+	for i := range coll.Requests {
+		if coll.Requests[i].Name == req.Name {
+			return fmt.Errorf("request %q already exists in collection %q", req.Name, coll.Name)
+		}
+	}
 	coll.Requests = append(coll.Requests, *req)
-	return store.SaveCollection(coll)
+	if err := store.SaveCollection(coll); err != nil {
+		coll.Requests = coll.Requests[:len(coll.Requests)-1]
+		return err
+	}
+	a.updateCachedCollection(coll)
+	return nil
 }
 
 // DeleteRequest 从 collection 中删除指定名称的请求并保存。
 func (a *App) DeleteRequest(coll *model.Collection, name string) error {
 	for i := range coll.Requests {
 		if coll.Requests[i].Name == name {
+			previous := append([]model.Request(nil), coll.Requests...)
 			coll.Requests = append(coll.Requests[:i], coll.Requests[i+1:]...)
-			break
+			if err := store.SaveCollection(coll); err != nil {
+				coll.Requests = previous
+				return err
+			}
+			a.updateCachedCollection(coll)
+			return nil
 		}
 	}
-	return store.SaveCollection(coll)
+	return fmt.Errorf("request %q not found in collection %q", name, coll.Name)
+}
+
+// updateCachedCollection keeps the application snapshot aligned with callers
+// such as the TUI, which intentionally edit a detached collection copy.
+func (a *App) updateCachedCollection(coll *model.Collection) {
+	for i := range a.collections {
+		if a.collections[i].FilePath == coll.FilePath ||
+			(a.collections[i].FilePath == "" && a.collections[i].Name == coll.Name) {
+			a.collections[i] = *coll
+			return
+		}
+	}
 }
 
 // appendParams 把 query params 拼到 URL，已存在的 query 保留。
