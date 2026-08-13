@@ -152,6 +152,24 @@ Folders are retained in flattened request names. Unsupported methods, auth/body
 modes, and file form-data parts are rejected explicitly; an existing collection
 is never overwritten.
 
+### Import a Postman Collection
+
+Start postkid, press `:` to open the command palette, then enter:
+
+```text
+import postman /path/to/MyCollection.postman_collection.json
+```
+
+Quote a path that contains spaces:
+
+```text
+import postman "/path/to/My API.postman_collection.json"
+```
+
+This is a command-palette command inside the TUI, not a shell subcommand. The
+imported collection is saved under postkid's `collections/` directory and is
+selected after a successful import.
+
 ## Development
 
 Run the test suite:

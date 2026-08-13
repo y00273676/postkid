@@ -150,6 +150,23 @@ Collection、填写请求名称后再次按 `Ctrl+S` 保存。导入过程不会
 不支持的方法、认证/Body 模式和文件 form-data 会明确报错；已有 Collection
 不会被覆盖。
 
+### 导入 Postman Collection
+
+启动 postkid，按 `:` 打开命令面板，然后输入：
+
+```text
+import postman /路径/MyCollection.postman_collection.json
+```
+
+路径包含空格时可以使用引号：
+
+```text
+import postman "/路径/My API.postman_collection.json"
+```
+
+这是 TUI 内的命令面板命令，不是 Shell 子命令。导入成功后，Collection 会保存
+到 postkid 的 `collections/` 目录，并在左侧列表中自动选中。
+
 ## 开发
 
 运行测试：
