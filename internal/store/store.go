@@ -40,6 +40,13 @@ var ErrCollectionExists = errors.New("collection already exists")
 // ErrCollectionNotFound 表示要操作的 collection 文件不存在。
 var ErrCollectionNotFound = errors.New("collection not found")
 
+// ErrEnvironmentExists 表示目标 environment 文件已经存在。
+//
+// ErrAlreadyExists is retained as a generic compatibility sentinel; creation
+// errors wrap both values so callers may use either the environment-specific
+// or the generic error check.
+var ErrEnvironmentExists = errors.New("environment already exists")
+
 // ErrAlreadyExists / ErrNotFound 是面向调用方的通用别名，保留更具体的
 // collection 错误值供 errors.Is 使用。
 var (
@@ -463,6 +470,17 @@ func cloneRequest(req model.Request) model.Request {
 	cloned.Headers = cloneStringMap(req.Headers)
 	cloned.Params = cloneStringMap(req.Params)
 	cloned.Variables = cloneStringMap(req.Variables)
+	if req.GRPC != nil {
+		grpc := *req.GRPC
+		grpc.Metadata = cloneStringMap(req.GRPC.Metadata)
+		grpc.ProtoFiles = append([]string(nil), req.GRPC.ProtoFiles...)
+		grpc.ImportPaths = append([]string(nil), req.GRPC.ImportPaths...)
+		if req.GRPC.TLS != nil {
+			tls := *req.GRPC.TLS
+			grpc.TLS = &tls
+		}
+		cloned.GRPC = &grpc
+	}
 	return cloned
 }
 
@@ -474,6 +492,12 @@ func cloneStringMap(values map[string]string) map[string]string {
 	for key, value := range values {
 		cloned[key] = value
 	}
+	return cloned
+}
+
+func cloneEnvironment(e model.Environment) model.Environment {
+	cloned := e
+	cloned.Variables = cloneStringMap(e.Variables)
 	return cloned
 }
 

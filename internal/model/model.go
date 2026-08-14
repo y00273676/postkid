@@ -3,7 +3,16 @@ package model
 
 import (
 	"slices"
+	"strings"
 	"time"
+)
+
+// Protocol identifies the wire protocol used by a request. An empty protocol
+// is intentionally treated as HTTP so existing collection files remain
+// unchanged.
+const (
+	ProtocolHTTP = "http"
+	ProtocolGRPC = "grpc"
 )
 
 // Auth 类型常量。
@@ -16,6 +25,7 @@ const (
 // Request 表示一个 API 请求定义（collection 中的一个条目）。
 type Request struct {
 	Name         string            `yaml:"name"`
+	Protocol     string            `yaml:"protocol,omitempty"`
 	Method       string            `yaml:"method"`
 	URL          string            `yaml:"url"`
 	Headers      map[string]string `yaml:"headers,omitempty"`
@@ -26,6 +36,87 @@ type Request struct {
 	AuthUsername string            `yaml:"auth_username,omitempty"`
 	AuthPassword string            `yaml:"auth_password,omitempty"`
 	AuthToken    string            `yaml:"auth_token,omitempty"`
+	GRPC         *GRPCRequest      `yaml:"grpc,omitempty"`
+}
+
+// GRPCRequest contains the protocol-specific part of a gRPC request. The
+// target is kept in Request.URL and the JSON payload in Request.Body so HTTP
+// collections keep their existing shape. Method may be either the method name
+// (when Service is set) or a fully-qualified service/method path.
+//
+// Metadata is sent as gRPC initial metadata. Request.Headers is also accepted
+// as metadata by the application layer for convenient migration of existing
+// request definitions.
+type GRPCRequest struct {
+	Service       string            `yaml:"service,omitempty"`
+	Method        string            `yaml:"method,omitempty"`
+	Metadata      map[string]string `yaml:"metadata,omitempty"`
+	TLS           *GRPCTLSConfig    `yaml:"tls,omitempty"`
+	ProtoFiles    []string          `yaml:"proto_files,omitempty"`
+	ImportPaths   []string          `yaml:"import_paths,omitempty"`
+	DescriptorSet string            `yaml:"descriptor_set,omitempty"`
+}
+
+// GRPCTLSConfig configures client-side TLS for a gRPC target. With Enabled
+// false the engine uses plaintext transport. CAFile is optional (the system
+// roots are used when it is empty); CertFile and KeyFile enable mutual TLS.
+type GRPCTLSConfig struct {
+	Enabled            bool   `yaml:"enabled,omitempty"`
+	ServerName         string `yaml:"server_name,omitempty"`
+	CAFile             string `yaml:"ca_file,omitempty"`
+	CertFile           string `yaml:"cert_file,omitempty"`
+	KeyFile            string `yaml:"key_file,omitempty"`
+	InsecureSkipVerify bool   `yaml:"insecure_skip_verify,omitempty"`
+}
+
+// ResolvedGRPCRequest is the variable-expanded representation consumed by
+// grpcengine.
+type ResolvedGRPCRequest struct {
+	Target        string
+	Service       string
+	Method        string
+	Body          string
+	Metadata      map[string]string
+	TLS           GRPCTLSConfig
+	ProtoFiles    []string
+	ImportPaths   []string
+	DescriptorSet string
+}
+
+// GRPCMethod describes a method returned by server reflection.
+type GRPCMethod struct {
+	Name            string
+	FullName        string
+	InputType       string
+	OutputType      string
+	ClientStreaming bool
+	ServerStreaming bool
+}
+
+// GRPCService describes a service and its reflected methods.
+type GRPCService struct {
+	Name    string
+	Methods []GRPCMethod
+}
+
+// GRPCResponse is the result of a unary gRPC invocation.
+type GRPCResponse struct {
+	StatusCode int
+	Status     string
+	Latency    time.Duration
+	Headers    map[string][]string
+	Trailers   map[string][]string
+	Size       int64
+	Body       string
+	RawBody    []byte
+	Err        error
+}
+
+// IsGRPC reports whether the request is a gRPC request. The nested grpc block
+// is accepted as an implicit protocol marker to make hand-written YAML less
+// verbose; protocol: grpc remains the canonical form.
+func (r Request) IsGRPC() bool {
+	return strings.EqualFold(strings.TrimSpace(r.Protocol), ProtocolGRPC) || r.GRPC != nil
 }
 
 // Collection 是一组请求的集合，对应 ~/.postkid/collections 下的一个 YAML 文件。

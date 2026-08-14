@@ -1,8 +1,10 @@
 package app
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"go.planetmeican.com/yangguang/postkid/internal/config"
@@ -49,6 +51,154 @@ func TestEnvironmentCRUDCreateAndRejectDuplicate(t *testing.T) {
 	}
 	if got.Variables["base_url"] != "https://local.example.com" {
 		t.Fatalf("persisted variables = %#v", got.Variables)
+	}
+}
+
+func TestImportEnvironmentNormalizesPersistsAndDetaches(t *testing.T) {
+	cfg := setupDataDir(t)
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := len(a.Environments())
+	source := model.Environment{
+		Name:      " imported.yaml ",
+		Variables: map[string]string{"base_url": "https://example.test", "token": "secret"},
+	}
+	created, err := a.ImportEnvironment(source)
+	if err != nil {
+		t.Fatalf("ImportEnvironment: %v", err)
+	}
+	if created.Name != "imported" || created.FilePath != filepath.Join(cfg.EnvironmentsDir(), "imported.yaml") {
+		t.Fatalf("created environment = %#v", created)
+	}
+	if len(a.Environments()) != before+1 {
+		t.Fatalf("cache count = %d, want %d", len(a.Environments()), before+1)
+	}
+
+	source.Variables["base_url"] = "https://source-mutated.test"
+	created.Variables["token"] = "returned-mutated"
+	idx, ok := a.environmentIndex("imported")
+	if !ok || a.Environments()[idx].Variables["base_url"] != "https://example.test" ||
+		a.Environments()[idx].Variables["token"] != "secret" {
+		t.Fatalf("cache shares imported state: %#v", a.Environments()[idx])
+	}
+	loaded, err := store.LoadEnvironments(cfg.EnvironmentsDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, environment := range loaded {
+		if environment.Name == "imported" {
+			if environment.Variables["base_url"] != "https://example.test" || environment.Variables["token"] != "secret" {
+				t.Fatalf("persisted environment changed unexpectedly: %#v", environment)
+			}
+			goto persisted
+		}
+	}
+	t.Fatal("imported environment was not persisted")
+
+persisted:
+	_, err = a.ImportEnvironment(model.Environment{Name: "prod", Variables: map[string]string{"token": "other"}})
+	if !errors.Is(err, store.ErrEnvironmentExists) || !errors.Is(err, store.ErrAlreadyExists) {
+		t.Fatalf("duplicate import error = %v, want environment exists sentinel", err)
+	}
+	if len(a.Environments()) != before+1 {
+		t.Fatalf("cache changed after duplicate import: %d", len(a.Environments()))
+	}
+}
+
+func TestImportEnvironmentRejectsInvalidValuesWithoutCreatingFile(t *testing.T) {
+	cfg := setupDataDir(t)
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := len(a.Environments())
+	for _, test := range []struct {
+		name string
+		vars map[string]string
+		want string
+	}{
+		{name: "bad/name", vars: map[string]string{}, want: "invalid storage name"},
+		{name: "bad-key", vars: map[string]string{"bad-key": "value"}, want: "environment variable name"},
+		{name: "empty-key", vars: map[string]string{" ": "value"}, want: "cannot be empty"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := a.ImportEnvironment(model.Environment{Name: test.name, Variables: test.vars})
+			if err == nil || !strings.Contains(strings.ToLower(err.Error()), strings.ToLower(test.want)) {
+				t.Fatalf("ImportEnvironment error = %v, want substring %q", err, test.want)
+			}
+			if len(a.Environments()) != before {
+				t.Fatalf("cache changed after invalid import: %d", len(a.Environments()))
+			}
+			path := filepath.Join(cfg.EnvironmentsDir(), test.name+".yaml")
+			if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+				t.Fatalf("invalid import left %q: %v", path, statErr)
+			}
+		})
+	}
+}
+
+func TestImportEnvironmentAndSelectRollsBackOnConfigFailure(t *testing.T) {
+	cfg := setupDataDir(t)
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	previousCurrent := cfg.CurrentEnv
+	before := len(a.Environments())
+	configPath := filepath.Join(cfg.Dir, "config.yaml")
+	if err := cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(configPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(configPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Remove(configPath) })
+
+	_, err = a.ImportEnvironmentAndSelect(model.Environment{
+		Name:      "rollback-import",
+		Variables: map[string]string{"token": "secret"},
+	})
+	if err == nil {
+		t.Fatal("ImportEnvironmentAndSelect unexpectedly succeeded")
+	}
+	if cfg.CurrentEnv != previousCurrent {
+		t.Fatalf("current environment changed after rollback: %q", cfg.CurrentEnv)
+	}
+	if len(a.Environments()) != before {
+		t.Fatalf("cache changed after rollback: %d vs %d", len(a.Environments()), before)
+	}
+	if _, statErr := os.Stat(filepath.Join(cfg.EnvironmentsDir(), "rollback-import.yaml")); !os.IsNotExist(statErr) {
+		t.Fatalf("rollback left imported file: %v", statErr)
+	}
+}
+
+func TestImportEnvironmentAndSelectPersistsCurrentEnvironment(t *testing.T) {
+	cfg := setupDataDir(t)
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := a.ImportEnvironmentAndSelect(model.Environment{
+		Name:      "selected-import",
+		Variables: map[string]string{"base_url": "https://selected.example.test"},
+	})
+	if err != nil {
+		t.Fatalf("ImportEnvironmentAndSelect: %v", err)
+	}
+	if a.CurrentEnvironment() == nil || a.CurrentEnvironment().Name != created.Name {
+		t.Fatalf("current environment = %#v, want %q", a.CurrentEnvironment(), created.Name)
+	}
+	reloaded, err := config.Load(cfg.Dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.CurrentEnv != "selected-import" {
+		t.Fatalf("persisted current_env = %q", reloaded.CurrentEnv)
 	}
 }
 

@@ -82,6 +82,49 @@ func TestCollectionRoundTrip(t *testing.T) {
 	}
 }
 
+func TestCollectionGRPCDescriptorConfigRoundTripAndClone(t *testing.T) {
+	dir := t.TempDir()
+	src := model.Collection{
+		Name: "grpc",
+		Requests: []model.Request{{
+			Name: "call", Protocol: model.ProtocolGRPC, URL: "localhost:50051", Method: "demo.Service/Get",
+			GRPC: &model.GRPCRequest{
+				ProtoFiles:    []string{"proto/service.proto"},
+				ImportPaths:   []string{"proto"},
+				DescriptorSet: "", Metadata: map[string]string{"x-token": "secret"},
+				TLS: &model.GRPCTLSConfig{Enabled: true, CAFile: "ca.pem"},
+			},
+		}},
+		FilePath: filepath.Join(dir, "grpc.yaml"),
+	}
+	if err := SaveCollection(&src); err != nil {
+		t.Fatalf("SaveCollection: %v", err)
+	}
+	loaded, err := LoadCollections(dir)
+	if err != nil {
+		t.Fatalf("LoadCollections: %v", err)
+	}
+	if len(loaded) != 1 || loaded[0].Requests[0].GRPC == nil {
+		t.Fatalf("loaded = %#v", loaded)
+	}
+	grpc := loaded[0].Requests[0].GRPC
+	if len(grpc.ProtoFiles) != 1 || grpc.ProtoFiles[0] != "proto/service.proto" || len(grpc.ImportPaths) != 1 || grpc.ImportPaths[0] != "proto" {
+		t.Fatalf("descriptor config lost in round trip: %#v", grpc)
+	}
+	if grpc.TLS == nil || !grpc.TLS.Enabled || grpc.TLS.CAFile != "ca.pem" {
+		t.Fatalf("TLS config lost in round trip: %#v", grpc.TLS)
+	}
+
+	cloned := cloneCollection(loaded[0])
+	cloned.Requests[0].GRPC.ProtoFiles[0] = "changed.proto"
+	cloned.Requests[0].GRPC.ImportPaths[0] = "changed"
+	cloned.Requests[0].GRPC.Metadata["x-token"] = "changed"
+	cloned.Requests[0].GRPC.TLS.CAFile = "changed.pem"
+	if grpc.ProtoFiles[0] != "proto/service.proto" || grpc.ImportPaths[0] != "proto" || grpc.Metadata["x-token"] != "secret" || grpc.TLS.CAFile != "ca.pem" {
+		t.Fatalf("clone shares nested gRPC state: %#v", grpc)
+	}
+}
+
 // TestSaveAtomic 验证保存后原文件存在且可读（原子写不丢文件）。
 func TestSaveAtomic(t *testing.T) {
 	dir := t.TempDir()

@@ -7,6 +7,7 @@ A terminal-native API client built with Go and Bubble Tea — Postman for your t
 ## Features
 
 - Send `GET`, `POST`, `PUT`, `PATCH`, and `DELETE` requests
+- Discover and invoke unary gRPC methods through Server Reflection, local `.proto` files, or a compiled protoset
 - Edit query parameters, headers, request bodies, and authentication settings
 - Use Basic Auth and Bearer Token authentication
 - Organize requests into YAML collections
@@ -49,6 +50,8 @@ go install ./cmd/postkid
 and response body, records history, and exits non-zero on transport errors or
 HTTP 4xx/5xx responses. Use `-dir <path>` to select a data directory and
 `-env <name>` to override `config.yaml`'s current environment.
+Saved gRPC requests also work with `run`; non-`OK` gRPC statuses exit non-zero.
+gRPC requests are not recorded in history yet.
 
 On first launch, postkid creates the following structure under `~/.postkid`:
 
@@ -101,6 +104,37 @@ When the same variable exists in multiple scopes, postkid uses this precedence:
 request > collection > environment
 ```
 
+gRPC requests live alongside HTTP requests in the same collection:
+
+```yaml
+- name: check-health
+  protocol: grpc
+  url: "{{grpc_target}}"
+  method: Check
+  body: '{}'
+  grpc:
+    service: grpc.health.v1.Health
+    method: Check
+    metadata:
+      authorization: "Bearer {{token}}"
+    # Leave all descriptor fields out to use Server Reflection.
+    # Or choose one local source:
+    # proto_files: [proto/health.proto]
+    # import_paths: [proto, third_party]
+    # descriptor_set: descriptors/health.protoset
+    tls:
+      enabled: true
+      server_name: api.example.com
+```
+
+gRPC supports plaintext/TLS, metadata, and JSON request/response bodies. When
+`proto_files` is set, `import_paths` may list the directories used to resolve
+imports. `descriptor_set` is an alternative to `proto_files`; the two sources
+cannot be combined. If neither local source is configured, postkid uses Server
+Reflection. Relative descriptor paths are resolved from the directory that
+contains the Collection YAML file, not from the current working directory.
+Streaming RPCs are not supported yet. Bodies continue to use `$EDITOR`.
+
 ## Keyboard shortcuts
 
 | Key | Action |
@@ -135,8 +169,13 @@ env delete       Delete an environment with confirmation
 collection new   Create a collection
 collection rename Rename a collection
 collection delete Delete a collection with confirmation
+grpc new         Create and save a gRPC request
+grpc edit        Edit the current gRPC request
+grpc discover    Select a service/method from Reflection or local descriptors
+grpc send        Invoke the current unary gRPC request
 import curl      Paste, preview, and save a cURL command
 import postman <path> Import a Postman Collection v2.1 JSON file
+import postman-env <path> Import and select a Postman Environment JSON file
 export curl      Copy the current request as a cURL command
 history          Browse request history
 new              Create a request
@@ -151,6 +190,12 @@ query parameters, headers, supported bodies, and Basic/Bearer authentication.
 Folders are retained in flattened request names. Unsupported methods, auth/body
 modes, and file form-data parts are rejected explicitly; an existing collection
 is never overwritten.
+
+`import postman-env <path>` imports enabled Postman Environment variables,
+writes a new environment YAML under postkid's `environments/` directory, and
+selects it automatically after a successful import. Disabled variables are
+skipped. The imported values are stored as local YAML (including secrets), so
+protect the data directory appropriately.
 
 ### Import a Postman Collection
 
@@ -169,6 +214,26 @@ import postman "/path/to/My API.postman_collection.json"
 This is a command-palette command inside the TUI, not a shell subcommand. The
 imported collection is saved under postkid's `collections/` directory and is
 selected after a successful import.
+
+### Import a Postman Environment
+
+Enter the following command in the TUI command palette:
+
+```text
+import postman-env /path/to/My Environment.postman_environment.json
+```
+
+Quote a path that contains spaces when needed:
+
+```text
+import postman-env "/path/to/My Environment.postman_environment.json"
+```
+
+Only enabled variables are imported. The new environment is saved under
+postkid's `environments/` directory and selected after a successful import;
+failed reads, parses, or saves keep the previous selection. Values are local
+plain text in the YAML file, so do not import secrets into a directory you do
+not trust.
 
 ## Development
 

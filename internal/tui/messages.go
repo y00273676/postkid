@@ -83,3 +83,39 @@ type PostmanImportSaveFailedMsg struct {
 	Path string
 	Err  error
 }
+
+// PostmanEnvironmentImportSavedMsg reports a successfully imported and
+// selected Postman environment.
+type PostmanEnvironmentImportSavedMsg struct {
+	Environment string
+	Imported    int
+	Path        string
+}
+
+// PostmanEnvironmentImportSaveFailedMsg reports a read, parse, or persistence
+// failure. The current environment selection remains untouched.
+type PostmanEnvironmentImportSaveFailedMsg struct {
+	Path string
+	Err  error
+}
+
+// GRPCOpenMsg opens the protocol-specific request form. Discover asks the
+// form to inspect its configured descriptor source immediately.
+type GRPCOpenMsg struct {
+	Edit     bool
+	Discover bool
+}
+
+// GRPCDiscoveredMsg carries services and methods returned by local descriptors
+// or server reflection.
+type GRPCDiscoveredMsg struct {
+	Services []model.GRPCService
+	Err      error
+	Token    uint64
+}
+
+// GRPCResponseMsg carries one unary gRPC response.
+type GRPCResponseMsg struct {
+	Resp     model.GRPCResponse
+	Resolved model.ResolvedGRPCRequest
+}

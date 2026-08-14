@@ -27,6 +27,9 @@ func (m Model) View() string {
 	if m.curlImport != nil {
 		return m.curlImportView()
 	}
+	if m.grpcModal != nil {
+		return m.grpcModalView()
+	}
 
 	listW := max(m.width*28/100, 24)
 	rightW := m.width - listW
@@ -36,9 +39,11 @@ func (m Model) View() string {
 
 	// 注意：lipgloss 的 Width/Height 含 padding 但不含 border，
 	// 面板外宽 = Width + 2，文本可用宽 = Width - 2（横向 padding）。
+	// 列表面板自带标题行（列表组件的 Title 已禁用，换取统一的标题样式）。
+	listContent := panelTitle("Collections", listW-4, m.focus == FocusList) + "\n" + m.list.View()
 	left := borderStyle(m.focus == FocusList).
 		Width(listW - 2).Height(contentH - 2).
-		Render(m.list.View())
+		Render(listContent)
 
 	reqContent := m.renderRequest(rightW-4, reqH-2)
 	reqBox := borderStyle(m.focus == FocusRequest).
@@ -81,10 +86,23 @@ func (m Model) modalView() string {
 	return lipgloss.Place(screenWidth, screenHeight, lipgloss.Center, lipgloss.Center, card)
 }
 
+// panelTitle 渲染面板标题行：加粗标题 + 弱化分隔线补齐宽度。
+func panelTitle(label string, width int, focused bool) string {
+	style := panelTitleUnfocused
+	if focused {
+		style = panelTitleFocused
+	}
+	title := style.Render(label)
+	return title + " " + rule(width-lipgloss.Width(title)-1)
+}
+
 // renderRequest 渲染右上请求面板：方法+URL、tab bar、当前 tab 内容。
 func (m Model) renderRequest(width, height int) string {
 	if m.curReq == nil {
-		return titleStyle.Render("No request selected")
+		return emptyStyle.Render("No request selected")
+	}
+	if m.curReq.IsGRPC() {
+		return m.renderGRPCRequest(width, height)
 	}
 
 	method := m.curReq.Method
@@ -99,22 +117,56 @@ func (m Model) renderRequest(width, height int) string {
 			url = r.URL
 		}
 	}
-	top := methodBadge(method) + " " + urlStyle.Render(truncate(url, width-8))
+	top := methodBadge(method) + " " + urlStyle.Render(truncate(url, width-10))
 
 	tabs := m.renderTabs()
-	content := m.renderTabContent(height - 2)
+	content := m.renderTabContent(height - 3)
 
-	return lipgloss.JoinVertical(lipgloss.Left, top, tabs, content)
+	return lipgloss.JoinVertical(lipgloss.Left, top, tabs, rule(width), content)
+}
+
+func (m Model) renderGRPCRequest(width, height int) string {
+	target := m.curReq.URL
+	service := grpcService(*m.curReq)
+	method := grpcMethod(*m.curReq)
+	tls := false
+	if m.app != nil {
+		var coll model.Collection
+		if m.curColl != nil {
+			coll = *m.curColl
+		}
+		if resolved, err := m.app.ResolveGRPCRequest(*m.curReq, coll); err == nil {
+			target = resolved.Target
+			service = resolved.Service
+			method = resolved.Method
+			tls = resolved.TLS.Enabled
+		}
+	}
+	transport := "plaintext"
+	if tls {
+		transport = "TLS"
+	}
+	top := methodBadge("GRPC") + " " + urlStyle.Render(truncate(target, width-22)) + " " + mutedStyle.Render("["+transport+"]")
+	call := strings.Trim(strings.TrimSpace(service)+"/"+strings.TrimSpace(method), "/")
+	if call != "" {
+		top += "\n" + keyStyle.Render("RPC") + punctStyle.Render(" : ") + valueStyle.Render(truncate(call, width-8))
+	}
+	tabs := m.renderTabs()
+	content := m.renderTabContent(height - 4)
+	return lipgloss.JoinVertical(lipgloss.Left, top, tabs, rule(width), content)
 }
 
 func (m Model) renderTabs() string {
 	names := []string{"Params", "Headers", "Body", "Auth"}
+	if m.curReq != nil && m.curReq.IsGRPC() {
+		names = []string{"RPC", "Metadata", "Body", "TLS"}
+	}
 	var parts []string
 	for i, n := range names {
 		if tab(i) == m.tab {
-			parts = append(parts, tabActive.Render(" "+n+" "))
+			parts = append(parts, tabActive.Render(n))
 		} else {
-			parts = append(parts, tabInactive.Render(" "+n+" "))
+			parts = append(parts, tabInactive.Render(n))
 		}
 	}
 	return strings.Join(parts, " ")
@@ -124,23 +176,53 @@ func (m Model) renderTabContent(height int) string {
 	var lines []string
 	switch m.tab {
 	case TabParams:
-		lines = renderKV(m.curReq.Params, height)
+		if m.curReq.IsGRPC() {
+			lines = []string{
+				keyStyle.Render("Service") + punctStyle.Render(" : ") + valueStyle.Render(grpcService(*m.curReq)),
+				keyStyle.Render("Method") + punctStyle.Render(" : ") + valueStyle.Render(grpcMethod(*m.curReq)),
+				mutedStyle.Render("press e to edit or :grpc discover to use reflection"),
+			}
+		} else {
+			lines = renderKV(m.curReq.Params, height)
+		}
 	case TabHeaders:
-		lines = renderKV(m.curReq.Headers, height)
+		values := m.curReq.Headers
+		if m.curReq.IsGRPC() {
+			values = grpcMetadata(m.curReq)
+		}
+		lines = renderKV(values, height)
 	case TabBody:
 		body := strings.TrimRight(m.curReq.Body, "\n")
 		if body == "" {
-			lines = []string{mutedStyle.Render("(empty — press e to edit in $EDITOR)")}
+			lines = []string{emptyStyle.Render("empty — press e to edit in $EDITOR")}
 		} else {
 			lines = truncateLines(strings.Split(HighlightJSON(body), "\n"), height)
 		}
 	case TabAuth:
-		lines = renderAuth(m.curReq, height)
+		if m.curReq.IsGRPC() {
+			transport := "plaintext"
+			serverName := ""
+			verify := "verify certificate"
+			if m.curReq.GRPC != nil && m.curReq.GRPC.TLS != nil && m.curReq.GRPC.TLS.Enabled {
+				transport = "TLS"
+				serverName = m.curReq.GRPC.TLS.ServerName
+				if m.curReq.GRPC.TLS.InsecureSkipVerify {
+					verify = "skip certificate verification"
+				}
+			}
+			lines = []string{
+				keyStyle.Render("Transport") + punctStyle.Render(" : ") + valueStyle.Render(transport),
+				keyStyle.Render("Server name") + punctStyle.Render(" : ") + valueStyle.Render(serverName),
+				keyStyle.Render("Verification") + punctStyle.Render(" : ") + valueStyle.Render(verify),
+			}
+		} else {
+			lines = renderAuth(m.curReq, height)
+		}
 	}
 	return strings.Join(lines, "\n")
 }
 
-// renderResponse 渲染右下响应面板：历史列表 / 状态行 + body。
+// renderResponse 渲染右下响应面板：历史列表 / 状态行 + 分隔线 + body。
 func (m Model) renderResponse() string {
 	if m.showHistory {
 		return m.renderHistory()
@@ -148,14 +230,53 @@ func (m Model) renderResponse() string {
 	if m.sending {
 		return lipgloss.NewStyle().Foreground(colAccent).Render(m.spinner.View() + " sending…")
 	}
+	if m.grpcResp != nil {
+		return m.renderGRPCResponse()
+	}
 	if m.resp == nil {
 		if m.err != nil {
 			return errStyle.Render(m.err.Error())
 		}
-		return mutedStyle.Render("(no response yet — press s to send)")
+		return emptyStyle.Render("no response yet — press s to send")
 	}
 	head := renderStatusHead(*m.resp)
-	return lipgloss.JoinVertical(lipgloss.Left, head, m.viewport.View())
+	return lipgloss.JoinVertical(lipgloss.Left, head, rule(m.viewport.Width), m.viewport.View())
+}
+
+func (m Model) renderGRPCResponse() string {
+	if m.grpcResp == nil {
+		return emptyStyle.Render("no gRPC response yet — press s to send")
+	}
+	r := *m.grpcResp
+	head := renderGRPCStatusHead(r)
+	if r.Err != nil {
+		return lipgloss.JoinVertical(lipgloss.Left, head, rule(m.viewport.Width), errStyle.Render(r.Err.Error()))
+	}
+	return lipgloss.JoinVertical(lipgloss.Left, head, rule(m.viewport.Width), m.viewport.View())
+}
+
+func renderGRPCStatusHead(r model.GRPCResponse) string {
+	status := r.Status
+	if status == "" {
+		status = "UNKNOWN"
+	}
+	badge := statusBadge("gRPC "+status, 0)
+	if r.Err != nil {
+		badge = errStyle.Render("gRPC " + status)
+	}
+	return badge + "  " + mutedStyle.Render(fmt.Sprintf("%s  %s", r.Latency.Round(0), humanBytes(r.Size)))
+}
+
+func formatGRPCStatusLine(r model.GRPCResponse) string {
+	status := r.Status
+	if status == "" {
+		status = "UNKNOWN"
+	}
+	style := okStyle
+	if r.Err != nil {
+		style = errStyle
+	}
+	return fmt.Sprintf("%s  %s  %s", style.Render("gRPC "+status), r.Latency.Round(0), humanBytes(r.Size))
 }
 
 // renderStatusHead 响应面板顶行：状态徽章 + 延迟/大小。
@@ -179,18 +300,20 @@ func (m Model) renderBottom() string {
 		return m.barLine(m.searchInput.View())
 	}
 
-	var left string
+	brand := brandStyle.Render("postkid")
+	var msg string
 	if m.err != nil {
-		left = barErrStyle.Render(m.err.Error())
+		msg = barErrStyle.Render(" " + m.err.Error())
 	} else {
-		left = statusBarStyle.Render(m.statusMsg)
+		msg = statusBarStyle.Render(" " + m.statusMsg)
 	}
 	if m.dirty {
-		left = barDirtyStyle.Render("● ") + left
+		msg = barDirtyStyle.Render(" ●") + msg
 	}
+	left := brand + msg
 
 	hint := renderHints([][2]string{
-		{"s", "send"}, {"^s", "save"}, {"e", "edit tab"}, {"m", "method/url"}, {":", "cmd"}, {"?", "help"}, {"q", "quit"},
+		{"s", "send"}, {"^s", "save"}, {"e", "edit"}, {"m", "url"}, {":", "cmd"}, {"?", "help"}, {"q", "quit"},
 	})
 	gap := m.width - lipgloss.Width(left) - lipgloss.Width(hint)
 	return left + barGap(gap) + hint
@@ -206,7 +329,7 @@ func renderHints(pairs [][2]string) string {
 	for _, p := range pairs {
 		parts = append(parts, hintKeyStyle.Render(p[0])+hintDescStyle.Render(" "+p[1]))
 	}
-	return strings.Join(parts, hintSepStyle.Render("  "))
+	return strings.Join(parts, hintSepStyle.Render(" · "))
 }
 
 // helpView 渲染 ? 帮助：居中卡片，按键分组。
@@ -237,6 +360,7 @@ func (m Model) helpView() string {
 			{"env new/rename/delete", "管理 Environment"},
 			{"import curl", "导入 cURL"},
 			{"import postman <path>", "导入 Postman Collection 文件"},
+			{"import postman-env <path>", "导入并切换 Postman Environment"},
 			{"?", "帮助开关"},
 			{"q", "退出"},
 		}},
@@ -389,7 +513,7 @@ func (m Model) renderHistory() string {
 			methodBadge(entry.Request.Method),
 			truncate(entry.Request.URL, 50),
 			status)
-		meta := mutedStyle.Render(fmt.Sprintf("        %s  %s",
+		meta := mutedStyle.Render(fmt.Sprintf("         %s  %s",
 			relativeTime(entry.Timestamp), entry.Response.Latency))
 		if i == m.historyIdx {
 			line = selectedRowStyle.Render("▎" + line)

@@ -87,7 +87,7 @@
 | curl 导出 | ✅ |
 | Postman Collection v2.1 导入 | ✅ 第二阶段 |
 | curl 导入 | ✅ V1.5 |
-| gRPC | 第二阶段 |
+| gRPC unary | ✅ Reflection、本地 proto/protoset descriptor、metadata、TLS；streaming 后续 |
 | WebSocket | 后面 |
 | Pre / Post Script | 后面 |
 

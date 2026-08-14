@@ -3,6 +3,7 @@ package app
 import (
 	"fmt"
 	"path/filepath"
+	"strings"
 
 	"go.planetmeican.com/yangguang/postkid/internal/model"
 	"go.planetmeican.com/yangguang/postkid/internal/store"
@@ -38,6 +39,66 @@ func (a *App) CreateEnvironment(name string, variables map[string]string) error 
 // same terminology as collection mutation APIs.
 func (a *App) AddEnvironment(name string, variables map[string]string) error {
 	return a.CreateEnvironment(name, variables)
+}
+
+// ImportEnvironment validates, atomically persists, and caches a complete
+// environment. The caller's model and variables map are never mutated or
+// shared with the returned value or the application cache.
+func (a *App) ImportEnvironment(environment model.Environment) (*model.Environment, error) {
+	if a == nil || a.cfg == nil {
+		return nil, fmt.Errorf("app and config are required")
+	}
+	normalizedName, err := store.NormalizeEnvironmentName(environment.Name)
+	if err != nil {
+		return nil, err
+	}
+	variables, err := normalizeImportedEnvironmentVariables(environment.Variables)
+	if err != nil {
+		return nil, err
+	}
+	if _, exists := a.environmentIndex(normalizedName); exists {
+		return nil, environmentAlreadyExistsError(normalizedName)
+	}
+
+	normalized := model.Environment{Name: normalizedName, Variables: variables}
+	persisted, err := store.CreateEnvironmentWithData(a.cfg.EnvironmentsDir(), normalized)
+	if err != nil {
+		return nil, err
+	}
+	// Keep the cache and returned pointer detached from each other. An import
+	// caller commonly edits the returned variables immediately afterwards.
+	cached := cloneEnvironment(persisted)
+	a.environments = append(a.environments, cached)
+	a.rebindCurrentEnvironment()
+	result := cloneEnvironment(cached)
+	return &result, nil
+}
+
+// ImportEnvironmentAndSelect imports an environment and makes it current as
+// one transaction. If current_env cannot be persisted, the newly-created YAML
+// file and cache entry are removed and the previous current environment is
+// restored in memory.
+func (a *App) ImportEnvironmentAndSelect(environment model.Environment) (*model.Environment, error) {
+	if a == nil || a.cfg == nil {
+		return nil, fmt.Errorf("app and config are required")
+	}
+	previousCurrent := a.cfg.CurrentEnv
+	imported, err := a.ImportEnvironment(environment)
+	if err != nil {
+		return nil, err
+	}
+
+	a.cfg.CurrentEnv = imported.Name
+	if err := a.cfg.Save(); err != nil {
+		a.cfg.CurrentEnv = previousCurrent
+		rollbackErr := store.DeleteEnvironment(imported)
+		if rollbackErr == nil {
+			a.removeCachedEnvironment(imported.FilePath)
+		}
+		return nil, combineEnvironmentErrors(fmt.Errorf("save current environment: %w", err), rollbackErr)
+	}
+	a.rebindCurrentEnvironment()
+	return imported, nil
 }
 
 // UpdateEnvironment replaces an environment's variables and persists the
@@ -232,6 +293,58 @@ func cloneVariables(in map[string]string) map[string]string {
 		out[key] = value
 	}
 	return out
+}
+
+func cloneEnvironment(in model.Environment) model.Environment {
+	out := in
+	out.Variables = cloneVariables(in.Variables)
+	return out
+}
+
+func normalizeImportedEnvironmentVariables(in map[string]string) (map[string]string, error) {
+	out := make(map[string]string, len(in))
+	for rawKey, value := range in {
+		key := strings.TrimSpace(rawKey)
+		if key == "" {
+			return nil, fmt.Errorf("environment variable key cannot be empty")
+		}
+		if !validEnvironmentVariableName(key) {
+			return nil, fmt.Errorf("environment variable name %q is not supported; use letters, digits, or underscore", key)
+		}
+		if _, exists := out[key]; exists {
+			return nil, fmt.Errorf("duplicate environment variable %q", key)
+		}
+		out[key] = value
+	}
+	return out, nil
+}
+
+func validEnvironmentVariableName(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') || r == '_' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func environmentAlreadyExistsError(name string) error {
+	return fmt.Errorf("environment %q already exists: %w: %w", name, store.ErrEnvironmentExists, store.ErrAlreadyExists)
+}
+
+func (a *App) removeCachedEnvironment(path string) {
+	for i := range a.environments {
+		if a.environments[i].FilePath == path {
+			a.environments = append(a.environments[:i], a.environments[i+1:]...)
+			a.rebindCurrentEnvironment()
+			return
+		}
+	}
 }
 
 func combineEnvironmentErrors(values ...error) error {

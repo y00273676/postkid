@@ -24,6 +24,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case ResponseMsg:
 		m.sending = false
+		m.grpcResp = nil
 		r := msg.Resp
 		// 记录历史（无论成功还是失败）
 		m.app.RecordHistory(msg.Resolved, r)
@@ -42,6 +43,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.setResponseViewportContent(true)
 		m.viewport.GotoTop()
 		m.statusMsg = formatStatusLine(r)
+		return m, nil
+
+	case GRPCResponseMsg:
+		m.sending = false
+		r := msg.Resp
+		m.grpcResp = &r
+		m.resp = nil
+		m.setResponseViewportContent(true)
+		if r.Err != nil {
+			m.err = r.Err
+			m.statusMsg = ""
+			return m, nil
+		}
+		m.err = nil
+		m.viewport.GotoTop()
+		m.statusMsg = formatGRPCStatusLine(r)
 		return m, nil
 
 	case editor.DoneMsg:
@@ -174,6 +191,57 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = msg.Err
 		}
 		return m, nil
+
+	case PostmanEnvironmentImportSavedMsg:
+		m.err = nil
+		m.statusMsg = fmt.Sprintf("imported environment %s (%d variables)", msg.Environment, msg.Imported)
+		return m, nil
+
+	case PostmanEnvironmentImportSaveFailedMsg:
+		if msg.Err == nil {
+			m.err = fmt.Errorf("postman environment import failed")
+		} else {
+			m.err = msg.Err
+		}
+		return m, nil
+
+	case GRPCOpenMsg:
+		m.openGRPCModal(msg.Edit)
+		if msg.Discover && m.grpcModal != nil {
+			m.grpcModal.discovering = true
+			m.grpcModal.err = ""
+			m.grpcDiscoverySeq++
+			return m, m.discoverGRPC(m.grpcDiscoverySeq)
+		}
+		return m, nil
+
+	case GRPCDiscoveredMsg:
+		if msg.Token != 0 && msg.Token != m.grpcDiscoverySeq {
+			return m, nil
+		}
+		if m.grpcModal == nil {
+			if msg.Err != nil {
+				m.err = msg.Err
+			}
+			return m, nil
+		}
+		m.grpcModal.discovering = false
+		if msg.Err != nil {
+			m.grpcModal.services = nil
+			m.grpcModal.err = msg.Err.Error()
+			return m, nil
+		}
+		m.grpcModal.err = ""
+		m.grpcModal.services = msg.Services
+		m.grpcModal.serviceIndex = 0
+		m.grpcModal.methodIndex = 0
+		if len(msg.Services) > 0 {
+			m.grpcModal.selectService()
+			m.statusMsg = fmt.Sprintf("discovered %d gRPC service(s) from %s", len(msg.Services), m.grpcModal.descriptorSource.String())
+		} else {
+			m.grpcModal.err = fmt.Sprintf("%s returned no services", m.grpcModal.descriptorSource.String())
+		}
+		return m, nil
 	}
 
 	// 命令面板模式下，所有键先交给 palette
@@ -204,6 +272,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m.updateCurlImport(kmsg)
+	}
+	if m.grpcModal != nil {
+		kmsg, ok := msg.(tea.KeyMsg)
+		if !ok {
+			return m, nil
+		}
+		return m.updateGRPCModal(kmsg)
 	}
 
 	// 搜索和历史都是模态交互。它们必须在全局快捷键之前处理，
@@ -389,14 +464,26 @@ func (m Model) updateRequest(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.curReq != nil {
 			switch m.tab {
 			case TabParams:
+				if m.curReq.IsGRPC() {
+					m.openGRPCModal(true)
+					return m, nil
+				}
 				m.modal = newKVModal(TabParams, m.curReq.Params)
 				m.modal.resize(m.width)
 			case TabHeaders:
-				m.modal = newKVModal(TabHeaders, m.curReq.Headers)
+				values := m.curReq.Headers
+				if m.curReq.IsGRPC() {
+					values = grpcMetadata(m.curReq)
+				}
+				m.modal = newKVModal(TabHeaders, values)
 				m.modal.resize(m.width)
 			case TabBody:
 				return m, editor.Open(m.curReq.Body)
 			case TabAuth:
+				if m.curReq.IsGRPC() {
+					m.openGRPCModal(true)
+					return m, nil
+				}
 				m.modal = newAuthModal(m.curReq)
 				m.modal.resize(m.width)
 			}
@@ -404,6 +491,10 @@ func (m Model) updateRequest(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case key.Matches(msg, keys.EditMeta):
 		if m.curReq != nil {
+			if m.curReq.IsGRPC() {
+				m.openGRPCModal(true)
+				return m, nil
+			}
 			m.modal = newMetaModal(m.curReq)
 			m.modal.resize(m.width)
 		}
@@ -481,6 +572,11 @@ func (m *Model) selectCurrent() {
 		return
 	}
 	m.curColl, m.curReq = item.coll, item.req
+	if m.curReq.IsGRPC() {
+		m.resp = nil
+	} else {
+		m.grpcResp = nil
+	}
 	m.viewport.GotoTop()
 }
 
@@ -494,14 +590,20 @@ func (m *Model) resize() {
 	respH := max(contentH-reqH, 3)
 	m.list.SetSize(listW-4, contentH-4)
 	m.viewport.Width = rightW - 4
-	m.viewport.Height = respH - 3 // 边框 2 + 状态行 1
+	m.viewport.Height = respH - 4 // 边框 2 + 状态行 1 + 分隔线 1
 	if m.modal != nil {
 		m.modal.resize(m.width)
 	}
 	if m.workspaceModal != nil {
 		m.workspaceModal.resize(m.width)
 	}
+	if m.grpcModal != nil {
+		m.grpcModal.resize(m.width)
+	}
 	if m.resp != nil {
+		m.setResponseViewportContent(false)
+	}
+	if m.grpcResp != nil {
 		m.setResponseViewportContent(false)
 	}
 }
@@ -512,6 +614,14 @@ func (m *Model) resize() {
 // one. Keeping the marker in the viewport also makes it visible after scrolling
 // to the bottom.
 func (m *Model) setResponseViewportContent(reset bool) {
+	if m.grpcResp != nil {
+		content := HighlightJSON(m.grpcResp.Body)
+		m.viewport.SetContent(content)
+		if reset {
+			m.viewport.GotoTop()
+		}
+		return
+	}
 	if m.resp == nil {
 		m.viewport.SetContent("")
 		return

@@ -7,6 +7,7 @@
 ## 功能特性
 
 - 发送 `GET`、`POST`、`PUT`、`PATCH` 和 `DELETE` 请求
+- 通过 Server Reflection、本地 `.proto` 或编译后的 protoset 发现并调用 unary gRPC 方法
 - 编辑查询参数、请求头、请求体和认证配置
 - 支持 Basic Auth 和 Bearer Token 认证
 - 使用 YAML Collection 组织请求
@@ -48,6 +49,8 @@ go install ./cmd/postkid
 `run` 是非交互模式：它会输出解析后的 URL、状态、耗时、大小和响应正文，
 同时记录 History；网络错误或 HTTP 4xx/5xx 响应会返回非零退出码。可用
 `-dir <路径>` 指定数据目录，用 `-env <名称>` 覆盖 `config.yaml` 中的当前环境。
+保存的 gRPC 请求也可用 `run` 执行；非 `OK` gRPC status 会返回非零退出码。
+gRPC 请求当前不会写入 History。
 
 首次启动时，postkid 会在 `~/.postkid` 下创建以下目录结构：
 
@@ -100,6 +103,36 @@ current_env: sandbox
 request > collection > environment
 ```
 
+gRPC 请求与 HTTP 请求保存在同一个 Collection 中：
+
+```yaml
+- name: check-health
+  protocol: grpc
+  url: "{{grpc_target}}"
+  method: Check
+  body: '{}'
+  grpc:
+    service: grpc.health.v1.Health
+    method: Check
+    metadata:
+      authorization: "Bearer {{token}}"
+    # 以下 descriptor 字段都不填时使用 Server Reflection。
+    # 也可以选择一种本地来源：
+    # proto_files: [proto/health.proto]
+    # import_paths: [proto, third_party]
+    # descriptor_set: descriptors/health.protoset
+    tls:
+      enabled: true
+      server_name: api.example.com
+```
+
+gRPC 支持 plaintext/TLS、metadata 和 JSON 请求/响应。设置 `proto_files` 后，
+可以用 `import_paths` 指定解析 import 的目录；`descriptor_set` 是
+`proto_files` 的另一种选择，两者不能同时设置。两个本地来源都不设置时，
+postkid 使用 Server Reflection。descriptor 相对路径按 Collection YAML 所在
+目录解析，而不是按当前工作目录解析。暂不支持 streaming RPC。Body 仍使用
+`$EDITOR` 编辑。
+
 ## 快捷键
 
 | 按键 | 操作 |
@@ -134,8 +167,13 @@ env delete       确认后删除 Environment
 collection new   创建 Collection
 collection rename 重命名 Collection
 collection delete 确认后删除 Collection
+grpc new         新建并保存 gRPC 请求
+grpc edit        编辑当前 gRPC 请求
+grpc discover    通过 Reflection 或本地 descriptor 选择 service/method
+grpc send        发送当前 unary gRPC 请求
 import curl      粘贴、预览并保存 cURL 命令
 import postman <路径> 导入 Postman Collection v2.1 JSON 文件
+import postman-env <路径> 导入并切换 Postman Environment JSON 文件
 export curl      将当前请求复制为 cURL 命令
 history          浏览请求历史
 new              新建请求
@@ -149,6 +187,10 @@ Collection、填写请求名称后再次按 `Ctrl+S` 保存。导入过程不会
 受支持的 Body 以及 Basic/Bearer 认证，并将 Folder 路径保留在扁平化后的请求名中。
 不支持的方法、认证/Body 模式和文件 form-data 会明确报错；已有 Collection
 不会被覆盖。
+
+`import postman-env <路径>` 会导入 Postman Environment 中启用的变量，写入新的
+Environment YAML，并在导入成功后自动切换。禁用的变量会跳过。变量值会以本地
+YAML 明文保存（包括 secret），请妥善保护 postkid 数据目录。
 
 ### 导入 Postman Collection
 
@@ -166,6 +208,24 @@ import postman "/路径/My API.postman_collection.json"
 
 这是 TUI 内的命令面板命令，不是 Shell 子命令。导入成功后，Collection 会保存
 到 postkid 的 `collections/` 目录，并在左侧列表中自动选中。
+
+### 导入 Postman Environment
+
+在 TUI 命令面板中输入：
+
+```text
+import postman-env /路径/My Environment.postman_environment.json
+```
+
+路径包含空格时可以使用引号：
+
+```text
+import postman-env "/路径/My Environment.postman_environment.json"
+```
+
+导入成功后，Environment 会保存到 postkid 的 `environments/` 目录并自动切换；
+读取、解析或保存失败时会保持原来的 Environment。变量值是本地 YAML 明文，
+请不要把 secret 导入到不受信任的目录。
 
 ## 开发
 

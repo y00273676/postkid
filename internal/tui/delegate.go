@@ -22,7 +22,7 @@ func (d reqDelegate) Render(w io.Writer, m list.Model, index int, item list.Item
 		return
 	}
 
-	const badgeW = 6
+	const badgeW = 7
 	bar := " "
 	nameStyle := valueStyle
 	if index == m.Index() {
@@ -31,7 +31,11 @@ func (d reqDelegate) Render(w io.Writer, m list.Model, index int, item list.Item
 
 	nameW := m.Width() - 1 - badgeW - 1 // 左边条 + badge + 间隔
 	name := ansi.Truncate(it.req.Name, nameW, "…")
-	row := bar + methodBadge(it.req.Method) + " " + nameStyle.Render(name)
+	method := it.req.Method
+	if it.req.IsGRPC() {
+		method = "GRPC"
+	}
+	row := bar + methodBadge(method) + " " + nameStyle.Render(name)
 
 	if index == m.Index() {
 		row = lipgloss.NewStyle().

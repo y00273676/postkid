@@ -1,4 +1,4 @@
-// Package app 是 Application 层门面，编排 store / env / httpengine。
+// Package app 是 Application 层门面，编排 store / env / HTTP 与 gRPC 引擎。
 // 本包不 import bubbletea，保持可被未来 CLI/CI 复用。
 package app
 
@@ -15,6 +15,7 @@ import (
 
 	"go.planetmeican.com/yangguang/postkid/internal/config"
 	"go.planetmeican.com/yangguang/postkid/internal/env"
+	"go.planetmeican.com/yangguang/postkid/internal/grpcengine"
 	"go.planetmeican.com/yangguang/postkid/internal/httpengine"
 	"go.planetmeican.com/yangguang/postkid/internal/model"
 	"go.planetmeican.com/yangguang/postkid/internal/store"
@@ -26,6 +27,7 @@ var requestVariablePattern = regexp.MustCompile(`\{\{\w+\}\}`)
 type App struct {
 	cfg    *config.Config
 	engine *httpengine.Engine
+	grpc   *grpcengine.Engine
 
 	collections  []model.Collection
 	environments []model.Environment
@@ -37,7 +39,7 @@ func New(cfg *config.Config) (*App, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("config is required")
 	}
-	a := &App{cfg: cfg, engine: httpengine.New()}
+	a := &App{cfg: cfg, engine: httpengine.New(), grpc: grpcengine.New()}
 
 	var err error
 	a.collections, err = store.LoadCollections(cfg.CollectionsDir())
@@ -89,6 +91,9 @@ func (a *App) SetEnvironment(name string) error {
 
 // ResolveRequest 合并变量、替换 {{var}}、把 params 拼到 URL，返回引擎可消费的请求。
 func (a *App) ResolveRequest(req model.Request, coll model.Collection) (model.ResolvedRequest, error) {
+	if req.IsGRPC() {
+		return model.ResolvedRequest{}, fmt.Errorf("request %q uses gRPC; call ResolveGRPCRequest instead", req.Name)
+	}
 	method := strings.ToUpper(strings.TrimSpace(req.Method))
 	if !model.IsValidMethod(method) {
 		return model.ResolvedRequest{}, fmt.Errorf("unsupported HTTP method %q", req.Method)
@@ -187,6 +192,9 @@ func normalizeRequest(req model.Request) (model.Request, error) {
 			return model.Request{}, fmt.Errorf("request name %q cannot contain control characters", req.Name)
 		}
 	}
+	if req.IsGRPC() {
+		return normalizeGRPCRequest(req)
+	}
 
 	req.Method = strings.ToUpper(strings.TrimSpace(req.Method))
 	if !model.IsValidMethod(req.Method) {
@@ -241,6 +249,17 @@ func cloneRequest(req model.Request) model.Request {
 	cloned.Headers = cloneStringMap(req.Headers)
 	cloned.Params = cloneStringMap(req.Params)
 	cloned.Variables = cloneStringMap(req.Variables)
+	if req.GRPC != nil {
+		grpc := *req.GRPC
+		grpc.Metadata = cloneStringMap(req.GRPC.Metadata)
+		grpc.ProtoFiles = append([]string(nil), req.GRPC.ProtoFiles...)
+		grpc.ImportPaths = append([]string(nil), req.GRPC.ImportPaths...)
+		if req.GRPC.TLS != nil {
+			tls := *req.GRPC.TLS
+			grpc.TLS = &tls
+		}
+		cloned.GRPC = &grpc
+	}
 	return cloned
 }
 

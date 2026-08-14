@@ -53,6 +53,19 @@ func (m Model) executeCommand(input string) tea.Cmd {
 	switch cmd {
 	case "send":
 		return m.sendCurrent()
+	case "grpc":
+		switch strings.ToLower(arg) {
+		case "new":
+			return m.openGRPCCommand(false, false)
+		case "edit":
+			return m.openGRPCCommand(true, false)
+		case "discover":
+			return m.openGRPCCommand(true, true)
+		case "send":
+			return m.sendGRPCCurrent()
+		default:
+			return m.info("usage: grpc new | grpc edit | grpc discover | grpc send")
+		}
 	case "save":
 		return m.saveCurrent()
 	case "env":
@@ -112,8 +125,14 @@ func (m Model) executeCommand(input string) tea.Cmd {
 				return m.info("usage: import postman <path>")
 			}
 			return m.importPostmanPath(path)
+		case "postman-env":
+			path := trimImportPathQuotes(postmanPathArgument(input))
+			if path == "" {
+				return m.info("usage: import postman-env <path>")
+			}
+			return m.importPostmanEnvironmentPath(path)
 		default:
-			return m.info("usage: import curl | import postman <path>")
+			return m.info("usage: import curl | import postman <path> | import postman-env <path>")
 		}
 	}
 	return m.info("unknown command: " + cmd)
@@ -192,6 +211,9 @@ func (m Model) exportCurl() tea.Cmd {
 func (m Model) sendCurrent() tea.Cmd {
 	if m.curReq == nil {
 		return m.errorCmd(fmt.Errorf("no request selected"))
+	}
+	if m.curReq.IsGRPC() {
+		return m.sendGRPCCurrent()
 	}
 	resolved, err := m.resolveCurrent()
 	if err != nil {

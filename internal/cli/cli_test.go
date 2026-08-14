@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"net"
 	"net/http"
@@ -9,6 +10,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/interop/grpc_testing"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/reflection"
 )
 
 func TestRunRequestUsesCurrentEnvironmentAndPrintsResponseMetadata(t *testing.T) {
@@ -109,6 +115,84 @@ requests:
 	}
 }
 
+func TestRunGRPCUnaryRequestPrintsResponseAndSucceeds(t *testing.T) {
+	listener, server := newGRPCTestServer(t)
+	defer server.GracefulStop()
+	defer listener.Close()
+
+	dir := makeDataDir(t, fmt.Sprintf(`name: demo
+requests:
+  - name: unary
+    protocol: grpc
+    url: %q
+    method: UnaryCall
+    body: '{}'
+    headers:
+      x-cli: enabled
+    grpc:
+      service: grpc.testing.TestService
+`, listener.Addr().String()), "", "")
+
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{"run", "-dir", dir, "demo/unary"}, &stdout, &stderr)
+	if code != ExitOK {
+		t.Fatalf("Run exit code = %d, stderr = %s, stdout = %s", code, stderr.String(), stdout.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("unexpected stderr: %s", stderr.String())
+	}
+	output := stdout.String()
+	for _, want := range []string{
+		"request: demo/unary",
+		"target: " + listener.Addr().String(),
+		"service/method: grpc.testing.TestService/UnaryCall",
+		"descriptor source: reflection",
+		"grpc status: OK",
+		"latency:",
+		"size:",
+		"body:\n",
+		"payload",
+	} {
+		if !strings.Contains(output, want) {
+			t.Errorf("output missing %q:\n%s", want, output)
+		}
+	}
+}
+
+func TestRunGRPCFailureReturnsRuntimeExitCode(t *testing.T) {
+	listener, server := newGRPCTestServer(t)
+	defer server.GracefulStop()
+	defer listener.Close()
+
+	dir := makeDataDir(t, fmt.Sprintf(`name: demo
+requests:
+  - name: unsupported
+    protocol: grpc
+    url: %q
+    method: UnimplementedCall
+    body: '{}'
+    grpc:
+      service: grpc.testing.TestService
+`, listener.Addr().String()), "", "")
+
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{"run", "-dir", dir, "demo/unsupported"}, &stdout, &stderr)
+	if code != ExitRuntime {
+		t.Fatalf("Run exit code = %d, want %d; stdout = %s; stderr = %s", code, ExitRuntime, stdout.String(), stderr.String())
+	}
+	for _, want := range []string{
+		"service/method: grpc.testing.TestService/UnimplementedCall",
+		"grpc status: Unimplemented",
+	} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Errorf("stdout missing %q:\n%s", want, stdout.String())
+		}
+	}
+	if !strings.Contains(stderr.String(), "request demo/unsupported") {
+		t.Errorf("stderr missing request error:\n%s", stderr.String())
+	}
+}
+
 func TestRunUsageErrors(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	if code := Run([]string{"run"}, &stdout, &stderr); code != ExitUsage {
@@ -171,6 +255,40 @@ func makeDataDir(t *testing.T, collection, environment, currentEnvironment strin
 type testServer struct {
 	URL    string
 	server *http.Server
+}
+
+type grpcCLITestService struct {
+	grpc_testing.UnimplementedTestServiceServer
+}
+
+func (grpcCLITestService) UnaryCall(ctx context.Context, _ *grpc_testing.SimpleRequest) (*grpc_testing.SimpleResponse, error) {
+	md, _ := metadata.FromIncomingContext(ctx)
+	if got := md.Get("x-cli"); len(got) != 1 || got[0] != "enabled" {
+		return nil, fmt.Errorf("metadata x-cli = %v, want [enabled]", got)
+	}
+	if err := grpc.SetHeader(ctx, metadata.Pairs("x-response", "ok")); err != nil {
+		return nil, err
+	}
+	grpc.SetTrailer(ctx, metadata.Pairs("x-trailer", "done"))
+	return &grpc_testing.SimpleResponse{
+		Payload: &grpc_testing.Payload{
+			Type: grpc_testing.PayloadType_COMPRESSABLE,
+			Body: []byte("hello from grpc"),
+		},
+	}, nil
+}
+
+func newGRPCTestServer(t *testing.T) (net.Listener, *grpc.Server) {
+	t.Helper()
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Skipf("local TCP listener unavailable: %v", err)
+	}
+	server := grpc.NewServer()
+	grpc_testing.RegisterTestServiceServer(server, grpcCLITestService{})
+	reflection.Register(server)
+	go func() { _ = server.Serve(listener) }()
+	return listener, server
 }
 
 func (s *testServer) Close() { _ = s.server.Close() }

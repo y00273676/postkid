@@ -83,6 +83,14 @@ type Model struct {
 	// curlImport is a fully modal multiline paste/preview/save flow. It is
 	// separate from the request editor because Enter must insert newlines here.
 	curlImport *curlImportModalState
+
+	// grpcModal edits or creates a gRPC request without changing the HTTP
+	// request form. A gRPC request still lives in the selected collection; the
+	// modal only owns the protocol-specific fields while it is open.
+	grpcModal *grpcModalState
+
+	grpcResp         *model.GRPCResponse
+	grpcDiscoverySeq uint64
 }
 
 // listItem 适配 list.Item，把 collection/request 平铺进左侧列表。
@@ -93,7 +101,12 @@ type listItem struct {
 
 func (i listItem) FilterValue() string { return i.req.Name }
 func (i listItem) Title() string       { return i.coll.Name + "/" + i.req.Name }
-func (i listItem) Description() string { return i.req.Method + "  " + i.req.URL }
+func (i listItem) Description() string {
+	if i.req.IsGRPC() {
+		return "gRPC  " + i.req.URL
+	}
+	return i.req.Method + "  " + i.req.URL
+}
 
 // New 构造初始 Model。
 func New(a *app.App) Model {
@@ -113,8 +126,8 @@ func New(a *app.App) Model {
 	l.Title = "Collections"
 	l.SetFilteringEnabled(false)
 	l.SetShowHelp(false)
-	l.SetShowTitle(true)
-	l.Styles.Title = lipgloss.NewStyle().Foreground(colAccent).Bold(true).Padding(0, 1)
+	// 标题由 view 层的 panelTitle 统一渲染，与请求/响应面板风格一致。
+	l.SetShowTitle(false)
 	l.Styles.TitleBar = lipgloss.NewStyle()
 	l.Styles.PaginationStyle = mutedStyle
 	l.Styles.StatusBar = mutedStyle
@@ -130,7 +143,7 @@ func New(a *app.App) Model {
 	p := textinput.New()
 	p.Prompt = ":"
 	p.PromptStyle = promptStyle
-	p.Placeholder = "send | import curl | import postman <path> | env <name> | history"
+	p.Placeholder = "send | grpc new/edit/discover/send | import curl | env <name> | history"
 
 	envName := "none"
 	if e := a.CurrentEnvironment(); e != nil {

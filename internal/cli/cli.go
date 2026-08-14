@@ -17,6 +17,7 @@ import (
 
 	"go.planetmeican.com/yangguang/postkid/internal/app"
 	"go.planetmeican.com/yangguang/postkid/internal/config"
+	"go.planetmeican.com/yangguang/postkid/internal/grpcengine"
 	"go.planetmeican.com/yangguang/postkid/internal/model"
 )
 
@@ -304,6 +305,10 @@ func findRequest(collection model.Collection, name string) (*model.Request, erro
 
 // runRequest returns true when execution should make the process fail.
 func runRequest(a *app.App, collection model.Collection, request model.Request, stdout, stderr io.Writer) bool {
+	if request.IsGRPC() {
+		return runGRPCRequest(a, collection, request, stdout, stderr)
+	}
+
 	resolved, err := a.ResolveRequest(request, collection)
 	if err != nil {
 		fmt.Fprintf(stderr, "request %s/%s: resolve: %v\n", collection.Name, request.Name, err)
@@ -338,6 +343,57 @@ func runRequest(a *app.App, collection model.Collection, request model.Request, 
 		fmt.Fprintln(stdout, "… response truncated by the 10MB read limit")
 	}
 	return response.StatusCode >= 400
+}
+
+// runGRPCRequest resolves and invokes a saved unary gRPC request. gRPC has no
+// HTTP status code, so the response's gRPC status code uses the canonical
+// grpc/codes numbering: OK is zero and every other code is a runtime failure.
+// History recording is intentionally left to the gRPC-aware application path;
+// App.RecordHistory currently accepts only the HTTP resolved request type.
+func runGRPCRequest(a *app.App, collection model.Collection, request model.Request, stdout, stderr io.Writer) bool {
+	resolved, err := a.ResolveGRPCRequest(request, collection)
+	if err != nil {
+		fmt.Fprintf(stderr, "request %s/%s: resolve: %v\n", collection.Name, request.Name, err)
+		return true
+	}
+
+	response := a.SendGRPC(resolved)
+
+	fmt.Fprintf(stdout, "request: %s/%s\n", collection.Name, request.Name)
+	fmt.Fprintf(stdout, "target: %s\n", resolved.Target)
+	fmt.Fprintf(stdout, "service/method: %s\n", grpcMethodDisplay(resolved))
+	fmt.Fprintf(stdout, "descriptor source: %s\n", app.GRPCDescriptorSource(resolved))
+	fmt.Fprintf(stdout, "grpc status: %s\n", grpcStatus(response))
+	fmt.Fprintf(stdout, "latency: %s\n", response.Latency.Round(0))
+	fmt.Fprintf(stdout, "size: %s\n", humanBytes(response.Size))
+	fmt.Fprintln(stdout, "body:")
+	if response.Body != "" {
+		fmt.Fprintln(stdout, response.Body)
+	}
+	if response.Err != nil {
+		fmt.Fprintf(stderr, "request %s/%s: %v\n", collection.Name, request.Name, response.Err)
+		return true
+	}
+	return response.StatusCode != 0
+}
+
+func grpcStatus(response model.GRPCResponse) string {
+	status := strings.TrimSpace(response.Status)
+	if status == "" {
+		if response.Err != nil {
+			return "error"
+		}
+		return "unknown"
+	}
+	return status
+}
+
+func grpcMethodDisplay(request model.ResolvedGRPCRequest) string {
+	service, method, err := grpcengine.NormalizeMethod(request.Service, request.Method)
+	if err == nil {
+		return service + "/" + method
+	}
+	return strings.Trim(strings.TrimSpace(request.Service), "/") + "/" + strings.Trim(strings.TrimSpace(request.Method), "/")
 }
 
 func humanBytes(n int64) string {

@@ -31,6 +31,7 @@ App (application 层门面，不 import bubbletea，可被 CLI/CI 复用)
   │
   ├── Store      → YAML 持久化（collections/*.yaml, environments/*.yaml）
   ├── HTTP Engine → net/http 执行请求
+  ├── gRPC Engine → reflection + dynamic protobuf 执行 unary RPC
   └── Environment → 变量合并与 {{variable}} 替换
 ```
 
@@ -41,6 +42,7 @@ App (application 层门面，不 import bubbletea，可被 CLI/CI 复用)
 - **`internal/app/`** — Application 层门面：加载数据、变量替换、请求发送、保存回写
 - **`internal/tui/`** — Bubble Tea TUI 实现：三面板布局（List | Request | Response），命令面板，Tab 切换
 - **`internal/httpengine/`** — HTTP 客户端封装，30s 超时，JSON pretty-print，10MB body 上限
+- **`internal/grpcengine/`** — gRPC Server Reflection、动态 JSON/protobuf、unary 调用与 TLS
 - **`internal/env/`** — `{{variable}}` 合并与替换，优先级：request > collection > environment
 - **`internal/store/`** — YAML 加载/原子写回（临时文件 + rename）
 - **`internal/config/`** — `~/.postkid/` 数据目录初始化与 config.yaml 管理
@@ -82,6 +84,8 @@ App (application 层门面，不 import bubbletea，可被 CLI/CI 复用)
 | curl 导出 | ✅ `:export curl` 复制到剪贴板 |
 | curl 导入 | ✅ `:import curl` 安全解析、预览并保存 |
 | Postman Collection 导入 | ✅ `:import postman <path>` 解析 v2.1 JSON 并原子保存 |
+| Postman Environment 导入 | ✅ `:import postman-env <path>` 导入启用变量并自动切换 |
+| gRPC unary | ✅ Reflection 或本地 proto/protoset、JSON body、metadata、plaintext/TLS；streaming 暂不支持 |
 | New Request | ✅ `:new` / `n` 表单选择 Collection 并填写请求信息 |
 | Delete Request | ✅ `d` 键并确认 |
 | Search | ✅ `/` 键实时过滤列表 |
@@ -95,3 +99,5 @@ App (application 层门面，不 import bubbletea，可被 CLI/CI 复用)
 - 请求发送是同步的，TUI 中用 `tea.Sequence` 保证 sending 状态先于异步响应
 - Auth 字段 → Authorization header 在 ResolveRequest 中处理，不覆盖显式 Header
 - History 用 JSONL 追加写，最多保留 500 条
+- Postman Environment 导入只保存启用变量；值写入本地 YAML 明文，需注意 secret 保护
+- gRPC 请求以 `protocol: grpc` 和 `grpc:` 配置块存入现有 Collection；descriptor 来源可选 Reflection、`proto_files`/`import_paths` 或 `descriptor_set`，旧请求默认 HTTP

@@ -651,7 +651,15 @@ func (m *Model) commitKVModal() error {
 	if m.modal.kvTab == TabParams {
 		m.curReq.Params = values
 	} else {
-		m.curReq.Headers = values
+		if m.curReq.IsGRPC() {
+			if m.curReq.GRPC == nil {
+				m.curReq.GRPC = &model.GRPCRequest{}
+			}
+			m.curReq.GRPC.Metadata = values
+			m.curReq.Headers = nil
+		} else {
+			m.curReq.Headers = values
+		}
 	}
 	m.dirty = true
 	m.statusMsg = "edited — Ctrl+S to save"

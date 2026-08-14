@@ -69,7 +69,7 @@ func CreateEnvironment(dir string, e *model.Environment) error {
 	}
 
 	if _, err := os.Lstat(path); err == nil {
-		return fmt.Errorf("environment %q already exists: %w", e.Name, ErrAlreadyExists)
+		return fmt.Errorf("environment %q already exists: %w: %w", e.Name, ErrEnvironmentExists, ErrAlreadyExists)
 	} else if !os.IsNotExist(err) {
 		return fmt.Errorf("inspect environment %q: %w", e.Name, err)
 	}
@@ -86,6 +86,26 @@ func CreateEnvironment(dir string, e *model.Environment) error {
 	e.Name = normalized
 	e.FilePath = path
 	return nil
+}
+
+// CreateEnvironmentWithData atomically creates a canonical environment file
+// and returns a detached model containing its persisted path. The input model
+// is never mutated, and an existing regular file, directory, or symlink is
+// never replaced.
+//
+// This value-oriented form is intended for application imports: callers can
+// validate and persist the complete environment first, then install the
+// returned value in an in-memory cache only after the filesystem operation
+// succeeds.
+func CreateEnvironmentWithData(dir string, e model.Environment) (model.Environment, error) {
+	created := cloneEnvironment(e)
+	// Imports always use the canonical destination derived from Name; never
+	// trust a FilePath carried by an external model.
+	created.FilePath = ""
+	if err := CreateEnvironment(dir, &created); err != nil {
+		return model.Environment{}, err
+	}
+	return cloneEnvironment(created), nil
 }
 
 // environmentAtomicCreateFile installs a new file with a no-overwrite link,
@@ -121,7 +141,7 @@ func environmentAtomicCreateFile(path string, data []byte, mode os.FileMode) err
 	}
 	if err := os.Link(tmpName, path); err != nil {
 		if os.IsExist(err) {
-			return fmt.Errorf("environment already exists: %w", ErrAlreadyExists)
+			return fmt.Errorf("environment already exists: %w: %w", ErrEnvironmentExists, ErrAlreadyExists)
 		}
 		return fmt.Errorf("install environment file: %w", err)
 	}

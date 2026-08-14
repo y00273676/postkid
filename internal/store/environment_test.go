@@ -48,6 +48,45 @@ func TestEnvironmentFileCRUD(t *testing.T) {
 	}
 }
 
+func TestCreateEnvironmentWithDataIsAtomicAndDoesNotMutateInput(t *testing.T) {
+	dir := t.TempDir()
+	input := model.Environment{
+		Name:      " imported.yaml ",
+		Variables: map[string]string{"base_url": "https://example.test", "token": "secret"},
+		FilePath:  filepath.Join(t.TempDir(), "caller-owned.yaml"),
+	}
+	created, err := CreateEnvironmentWithData(dir, input)
+	if err != nil {
+		t.Fatalf("CreateEnvironmentWithData: %v", err)
+	}
+	wantPath := filepath.Join(dir, "imported.yaml")
+	if created.Name != "imported" || created.FilePath != wantPath {
+		t.Fatalf("created environment = %#v", created)
+	}
+	if input.Name != " imported.yaml " || input.FilePath == wantPath {
+		t.Fatalf("input environment was mutated: %#v", input)
+	}
+
+	created.Variables["base_url"] = "changed"
+	input.Variables["token"] = "caller-changed"
+	loaded, err := LoadEnvironments(dir)
+	if err != nil {
+		t.Fatalf("LoadEnvironments: %v", err)
+	}
+	if len(loaded) != 1 || loaded[0].Variables["base_url"] != "https://example.test" ||
+		loaded[0].Variables["token"] != "secret" {
+		t.Fatalf("persisted environment changed unexpectedly: %#v", loaded)
+	}
+
+	_, err = CreateEnvironmentWithData(dir, model.Environment{Name: "imported"})
+	if !errors.Is(err, ErrEnvironmentExists) {
+		t.Fatalf("duplicate error = %v, want ErrEnvironmentExists", err)
+	}
+	if !errors.Is(err, ErrAlreadyExists) {
+		t.Fatalf("duplicate error = %v, want ErrAlreadyExists compatibility sentinel", err)
+	}
+}
+
 func TestEnvironmentPathRejectsUnsafeNamesAndOutsideFiles(t *testing.T) {
 	dir := t.TempDir()
 	for _, name := range []string{"", "..", "../escape", "a/b", "a\\b", "\n"} {
